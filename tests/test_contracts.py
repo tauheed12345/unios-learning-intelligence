@@ -8,6 +8,7 @@ from app.schemas import (
     TeachingStrategy,
     LessonBlockType,
 )
+from app.core.config import settings
 from app.services import (
     build_pedagogy_prompt,
     build_lesson_prompt,
@@ -16,10 +17,19 @@ from app.services import (
 
 
 class TestSprint1IntelligenceHarness(unittest.TestCase):
-    """Evaluation and contract test harness for AI/ML-2 Sprint-1."""
+    """Evaluation and contract test harness for AI/ML-2 Sprint-1 and Sprint-2 contracts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._original_provider = settings.LLM_PROVIDER
+        settings.LLM_PROVIDER = "mock"
+
+    @classmethod
+    def tearDownClass(cls):
+        settings.LLM_PROVIDER = cls._original_provider
 
     def setUp(self):
-        self.provider = get_llm_provider()
+        self.provider = get_llm_provider(force_mock=True)
 
     def test_bachelor_learner_contract(self):
         """Verify Bachelor stage normalized context and foundational prompt generation."""
@@ -79,6 +89,117 @@ class TestSprint1IntelligenceHarness(unittest.TestCase):
         self.assertIn("Recent Graduate", prompt)
         self.assertIn("System Design Mock", prompt)
 
+    def test_learner_identity_contract_and_boundary(self):
+        """Verify LearnerIdentity contract validation and architectural boundaries."""
+        from app.schemas import LearnerIdentity
+
+        # Valid identity
+        identity = LearnerIdentity(
+            learner_id="user_abc-123.test",
+            stage=LearnerStage.BACHELOR,
+            academic_program="B.Tech CS",
+            current_semester=3,
+            institution="State University",
+        )
+        self.assertEqual(identity.learner_id, "user_abc-123.test")
+        self.assertEqual(identity.stage, LearnerStage.BACHELOR)
+
+        # Invalid learner_id: empty or whitespace
+        with self.assertRaises(ValidationError):
+            LearnerIdentity(learner_id="   ")
+
+        # Invalid learner_id: invalid characters (e.g. spaces or quotes)
+        with self.assertRaises(ValidationError):
+            LearnerIdentity(learner_id="user 123 with space")
+
+    def test_declared_skill_contract_validations(self):
+        """Verify strict validations on skill names and ratings."""
+        from app.schemas import DeclaredSkill, SkillCategory
+
+        # Valid skill
+        skill = DeclaredSkill(
+            skill_name="Python",
+            self_rating=4,
+            category=SkillCategory.PROGRAMMING,
+        )
+        self.assertEqual(skill.skill_name, "Python")
+        self.assertEqual(skill.self_rating, 4)
+
+        # Invalid rating: below 1 or above 5
+        with self.assertRaises(ValidationError):
+            DeclaredSkill(skill_name="Go", self_rating=0)
+        with self.assertRaises(ValidationError):
+            DeclaredSkill(skill_name="Go", self_rating=6)
+
+        # Invalid skill_name: empty, whitespace, or less than 2 characters
+        with self.assertRaises(ValidationError):
+            DeclaredSkill(skill_name="   ", self_rating=3)
+        with self.assertRaises(ValidationError):
+            DeclaredSkill(skill_name="A", self_rating=3)
+
+    def test_learning_preferences_contract_validations(self):
+        """Verify study hours and ratio boundaries."""
+        from app.schemas import LearningPreferencesInput
+
+        # Valid preferences
+        pref = LearningPreferencesInput(weekly_hours=20, practical_vs_theory_ratio=0.8)
+        self.assertEqual(pref.weekly_hours, 20)
+
+        # Invalid weekly_hours: 0 or > 80
+        with self.assertRaises(ValidationError):
+            LearningPreferencesInput(weekly_hours=0)
+        with self.assertRaises(ValidationError):
+            LearningPreferencesInput(weekly_hours=85)
+
+        # Invalid practical_vs_theory_ratio
+        with self.assertRaises(ValidationError):
+            LearningPreferencesInput(practical_vs_theory_ratio=1.5)
+        with self.assertRaises(ValidationError):
+            LearningPreferencesInput(practical_vs_theory_ratio=-0.2)
+
+    def test_intelligence_schema_defensive_normalization(self):
+        """Verify defensive normalization of LLM returns (casing, percentages, comma lists)."""
+        from app.schemas import (
+            ReadinessAssessment,
+            ReadinessTier,
+            SkillAnalysis,
+            CareerGoalProfile,
+        )
+
+        # 1. Readiness tier case-insensitivity & synonym repair
+        assessment = ReadinessAssessment.model_validate({
+            "overall_readiness_score": "85%",
+            "readiness_tier": "HIGH",
+            "recommended_entry_level": "advanced",
+            "onboarding_recommendations": "Step 1, Step 2; Step 3",
+        })
+        self.assertEqual(assessment.readiness_tier, ReadinessTier.HIGH)
+        self.assertAlmostEqual(assessment.overall_readiness_score, 0.85)
+        self.assertEqual(len(assessment.onboarding_recommendations), 3)
+
+        # Clamping slight float noise
+        assessment_clamped = ReadinessAssessment.model_validate({
+            "overall_readiness_score": 1.05,
+            "readiness_tier": "needs-scaffolding",
+        })
+        self.assertEqual(assessment_clamped.overall_readiness_score, 1.0)
+        self.assertEqual(assessment_clamped.readiness_tier, ReadinessTier.NEEDS_SCAFFOLDING)
+
+        # 2. Skill analysis list normalization from comma string
+        skill_analysis = SkillAnalysis.model_validate({
+            "core_strengths": "Python, SQL, System Architecture",
+            "critical_skill_gaps": ["Docker", "Kubernetes"],
+        })
+        self.assertEqual(len(skill_analysis.core_strengths), 3)
+        self.assertIn("Python", skill_analysis.core_strengths)
+
+        # 3. Genuine validation failure when type is completely unparseable
+        with self.assertRaises(ValidationError):
+            ReadinessAssessment.model_validate({
+                "overall_readiness_score": "unparseable_string",
+                "readiness_tier": "HIGH",
+            })
+
     def test_structured_lesson_generation_and_boundary_rules(self):
         """Verify that lesson blocks are structured and strictly contain NO raw UI/HTML/React code."""
         state = LearnerState(stage=LearnerStage.BACHELOR)
@@ -123,6 +244,30 @@ class TestSprint1IntelligenceHarness(unittest.TestCase):
             # Missing required fields 'topic', 'objective', 'learner_state'
             NormalizedLearningContext.model_validate({})
 
+    def test_sprint1_learning_api_endpoints(self):
+        """Verify Sprint 1 HTTP POST /api/v1/learning/plan-lesson remains fully operational."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_test_001",
+            "topic": "Graph Traversal",
+            "objective": "Understand BFS vs DFS trade-offs",
+            "learner_state": {
+                "learner_id": "bach_graph_01",
+                "stage": "bachelor",
+                "confidence": "medium",
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["topic"], "Graph Traversal")
+        self.assertGreaterEqual(len(data["blocks"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
