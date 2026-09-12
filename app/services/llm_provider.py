@@ -67,16 +67,17 @@ def extract_json_payload(raw_text: str) -> str:
 
 def normalize_intelligence_dict(data: Dict[str, Any], profile: OnboardingInputProfile) -> Dict[str, Any]:
     """Defensively repairs and normalizes key names, aliases, and missing optional structures in LLM output
-
     WITHOUT silently fabricating critical learner ground truth.
     """
     if not isinstance(data, dict):
         raise LLMParseError("Normalized LLM output must be a dictionary object.")
 
+    target_role = profile.get_effective_target_role()
+
     # 1. Enforce ground-truth learner metadata
     data["learner_id"] = profile.learner_id
-    data["stage"] = profile.stage.value
-    data["target_role"] = profile.target_role
+    data["stage"] = profile.stage.value if profile.stage else profile.get_effective_stage().value
+    data["target_role"] = target_role
 
     # 2. Normalize top-level section key aliases (camelCase / synonyms)
     key_mapping = {
@@ -137,7 +138,7 @@ def normalize_intelligence_dict(data: Dict[str, Any], profile: OnboardingInputPr
 
     # 6. Normalize nested aliases in career_goals
     cg = data["career_goals"]
-    cg["target_role"] = profile.target_role
+    cg["target_role"] = target_role
     if "milestones" in cg and "key_milestones" not in cg:
         cg["key_milestones"] = cg.pop("milestones")
     if "competencies" in cg and "high_priority_competencies" not in cg:
@@ -169,10 +170,80 @@ def normalize_intelligence_dict(data: Dict[str, Any], profile: OnboardingInputPr
     if "recommendations" in rd and "onboarding_recommendations" not in rd:
         rd["onboarding_recommendations"] = rd.pop("recommendations")
 
+    # === STRICT GROUNDING SANITIZATION ===
+    weekly_hours = profile.get_effective_weekly_hours()
+    if weekly_hours is None:
+        cg["estimated_timeline_months"] = None
+        # Sanitize any hallucinated study hours from core_strengths
+        if isinstance(sa.get("core_strengths"), list):
+            sa["core_strengths"] = [
+                item for item in sa["core_strengths"]
+                if not re.search(r'\b(?:10h/week|\d+h/week|\d+\s*hours?/week)\b', str(item), re.I)
+            ]
+
+    practical_ratio = profile.get_effective_practical_ratio()
+    if practical_ratio is None:
+        if "theoretical_vs_applied_balance" in ka and isinstance(ka["theoretical_vs_applied_balance"], str):
+            bal = ka["theoretical_vs_applied_balance"]
+            if re.search(r'\(?0\.70?\)?|\b70%\b|default\s+to|balanced\s+foundational', bal, re.I):
+                ka["theoretical_vs_applied_balance"] = "Information unavailable: no practical vs theoretical preference was provided by the learner."
+
+    # Remove hallucinated "10h/week", "0.70", or assumed bachelor enrollment from executive_summary if not provided
+    if isinstance(data.get("executive_summary"), str):
+        summary = data["executive_summary"]
+        if weekly_hours is None:
+            summary = re.sub(r'\(?\b10h/week\b\)?', '', summary)
+            summary = re.sub(r'with\s+10\s*hours?/week\s+commitment', '', summary, flags=re.I)
+        if practical_ratio is None:
+            summary = re.sub(r'\(?0\.70?\)?', '', summary)
+        if profile.stage is None:
+            summary = re.sub(r'\b(?:is a Bachelor\'s degree student|is a Bachelor student|is a bachelor\'s student|is a bachelor student)\b', 'is targeting', summary, flags=re.I)
+        data["executive_summary"] = " ".join(summary.split())
+
+    # Forward weak_topics and concept_mastery into skill gaps / foundation topics
+    weak_topics = profile.get_effective_weak_topics()
+    if weak_topics:
+        if not isinstance(sa.get("critical_skill_gaps"), list):
+            sa["critical_skill_gaps"] = []
+        for wt in weak_topics:
+            if not any(wt.lower() in str(g).lower() for g in sa["critical_skill_gaps"]):
+                sa["critical_skill_gaps"].insert(0, wt)
+
+        if not isinstance(ka.get("recommended_foundation_topics"), list):
+            ka["recommended_foundation_topics"] = []
+        for wt in weak_topics:
+            if not any(wt.lower() in str(t).lower() for t in ka["recommended_foundation_topics"]):
+                ka["recommended_foundation_topics"].insert(0, wt)
+
+    strong_topics = profile.get_effective_strong_topics()
+    if strong_topics:
+        if not isinstance(sa.get("core_strengths"), list):
+            sa["core_strengths"] = []
+        for st in strong_topics:
+            if not any(st.lower() in str(s).lower() for s in sa["core_strengths"]):
+                sa["core_strengths"].insert(0, st)
+
+    concept_mastery = profile.get_effective_concept_mastery()
+    if concept_mastery:
+        if not isinstance(sa.get("core_strengths"), list):
+            sa["core_strengths"] = []
+        if not isinstance(sa.get("critical_skill_gaps"), list):
+            sa["critical_skill_gaps"] = []
+        for concept, score in concept_mastery.items():
+            if score >= 0.70:
+                if not any(concept.lower() in str(s).lower() for s in sa["core_strengths"]):
+                    sa["core_strengths"].append(f"{concept} (Mastery: {score:.0%})")
+            elif score < 0.50:
+                if not any(concept.lower() in str(g).lower() for g in sa["critical_skill_gaps"]):
+                    sa["critical_skill_gaps"].insert(0, f"{concept} (Remediation)")
+
+    if not sa.get("core_strengths"):
+        sa["core_strengths"] = ["No verified technical skills declared during onboarding"]
+
     # Executive summary fallback if omitted
     if not data.get("executive_summary"):
         data["executive_summary"] = (
-            f"Onboarding analysis for {profile.learner_id} targeting '{profile.target_role}' "
+            f"Onboarding analysis for {profile.learner_id} targeting '{target_role}' "
             f"in stage {profile.stage.value}."
         )
 
@@ -272,110 +343,197 @@ class MockLLMProvider(BaseLLMProvider):
     def analyze_learner_onboarding(
         self, profile: OnboardingInputProfile, prompt: str
     ) -> LearnerIntelligenceReport:
-        ratings = [s.self_rating for s in profile.declared_skills] if profile.declared_skills else [2]
-        avg_rating = sum(ratings) / len(ratings)
+        target_role = profile.get_effective_target_role()
+        concept_mastery = profile.get_effective_concept_mastery()
+        weak_topics = profile.get_effective_weak_topics()
+        strong_topics = profile.get_effective_strong_topics()
+        pref_medium = profile.get_effective_learning_preference()
+        weekly_hours = profile.get_effective_weekly_hours()
+        ratio = profile.get_effective_practical_ratio()
+        pace = profile.get_effective_pace()
 
-        # Stage-calibrated profiling
-        if profile.stage == LearnerStage.MASTER:
-            prof_level = "advanced" if avg_rating >= 3.0 else "intermediate"
-            readiness_tier = ReadinessTier.HIGH if avg_rating >= 3.5 else ReadinessTier.MODERATE
-            readiness_score = min(0.95, max(0.65, round(avg_rating / 5.0 + 0.15, 2)))
-            entry_level = "advanced" if avg_rating >= 3.5 else "intermediate"
-            primary_driver = "academic_excellence"
-            pacing = "accelerated"
-        elif profile.stage == LearnerStage.GRADUATE:
-            prof_level = "intermediate" if avg_rating >= 2.5 else "beginner"
-            readiness_tier = ReadinessTier.MODERATE if avg_rating >= 2.5 else ReadinessTier.NEEDS_SCAFFOLDING
-            readiness_score = min(0.85, max(0.45, round(avg_rating / 5.0, 2)))
-            entry_level = "intermediate" if avg_rating >= 3.0 else "foundational"
-            primary_driver = "career_transition"
-            pacing = "standard"
-        else:  # BACHELOR
+        # 1. Evaluate baseline competency from explicit data ONLY
+        ratings = [s.self_rating for s in profile.declared_skills]
+        if ratings:
+            avg_rating = sum(ratings) / len(ratings)
+        elif concept_mastery:
+            avg_rating = (sum(concept_mastery.values()) / len(concept_mastery)) * 5.0
+        else:
+            avg_rating = None
+
+        # Determine proficiency level
+        if avg_rating is not None:
             if avg_rating >= 3.8:
                 prof_level = "advanced"
-                readiness_tier = ReadinessTier.HIGH
-                readiness_score = 0.88
-                entry_level = "advanced"
             elif avg_rating >= 2.5:
                 prof_level = "intermediate"
-                readiness_tier = ReadinessTier.MODERATE
-                readiness_score = 0.68
-                entry_level = "intermediate"
             else:
                 prof_level = "beginner"
-                readiness_tier = ReadinessTier.NEEDS_SCAFFOLDING
-                readiness_score = 0.42
-                entry_level = "foundational"
-            primary_driver = "project_creation"
-            pacing = "scaffolded" if prof_level == "beginner" else "standard"
+        else:
+            prof_level = "beginner"
 
-        top_skills = [s.skill_name for s in profile.declared_skills if s.self_rating >= 3]
-        skill_gaps = [
-            f"Advanced {profile.target_role} Architecture",
-            "Production Testing & Quality Automation",
-            "Scalable Systems Design",
+        # 2. Build Core Strengths (strictly grounded)
+        strengths = []
+        for s in profile.declared_skills:
+            if s.self_rating >= 3:
+                strengths.append(s.skill_name)
+        for st in strong_topics:
+            if st not in strengths:
+                strengths.append(st)
+        for concept, score in concept_mastery.items():
+            if score >= 0.7 and concept not in strengths:
+                strengths.append(f"{concept} (Mastery: {score:.0%})")
+
+        if not strengths:
+            strengths = ["No verified technical skills declared during onboarding"]
+
+        # 3. Build Critical Skill Gaps & Foundation Topics
+        skill_gaps = []
+        foundation_topics = []
+
+        for wt in weak_topics:
+            if wt not in skill_gaps:
+                skill_gaps.append(wt)
+            if wt not in foundation_topics:
+                foundation_topics.append(wt)
+
+        for concept, score in concept_mastery.items():
+            if score < 0.5:
+                gap_label = f"{concept} (Remediation)"
+                if gap_label not in skill_gaps:
+                    skill_gaps.append(gap_label)
+                if concept not in foundation_topics:
+                    foundation_topics.append(concept)
+
+        default_role_gaps = [
+            f"Core {target_role} Architecture",
+            "Scalable Systems & Production Readiness",
         ]
+        for rg in default_role_gaps:
+            if len(skill_gaps) < 4 and rg not in skill_gaps:
+                skill_gaps.append(rg)
+
+        default_foundations = [
+            f"{target_role} Core Fundamentals",
+            "Data Structures & Algorithmic Thinking",
+        ]
+        for df in default_foundations:
+            if len(foundation_topics) < 4 and df not in foundation_topics:
+                foundation_topics.append(df)
+
+        # 4. Baseline summary
+        if profile.declared_skills:
+            baseline_summary = f"Demonstrated self-assessed average competency of {avg_rating:.1f}/5 across {len(profile.declared_skills)} declared skills."
+        elif concept_mastery:
+            baseline_summary = f"Demonstrated baseline competency across {len(concept_mastery)} assessed concepts (average mastery: {sum(concept_mastery.values())/len(concept_mastery):.0%})."
+        elif strong_topics or weak_topics:
+            baseline_summary = f"Baseline evaluated from {len(strong_topics)} strong topics and {len(weak_topics)} remediation areas."
+        else:
+            baseline_summary = "No declared technical skills, prior projects, or baseline diagnostic scores provided in onboarding profile."
+
+        # 5. Theoretical vs Applied balance
+        if ratio is not None:
+            theoretical_vs_applied = (
+                f"Prefers practical application (ratio {ratio:.2f}) with scaffolding."
+                if ratio >= 0.5
+                else f"Prefers theoretical foundations (ratio {ratio:.2f}) before hands-on tasks."
+            )
+        else:
+            theoretical_vs_applied = "Information unavailable: no practical vs theoretical preference was provided by the learner."
+
+        # 6. Pacing and modality
+        dominant_modality = pref_medium if pref_medium else "adaptive"
+        effective_pacing = pace if pace else ("scaffolded" if prof_level == "beginner" else "standard")
+
+        # 7. Timeline & Alignment
+        if weekly_hours is not None:
+            timeline_months = max(3, int(300 / max(1, weekly_hours * 4)))
+        else:
+            timeline_months = None
+
+        if avg_rating is not None:
+            alignment_score = round(min(1.0, max(0.2, avg_rating / 5.0)), 2)
+            readiness_score = round(min(0.95, max(0.35, avg_rating / 5.0 + (0.1 if profile.stage == LearnerStage.MASTER else 0.0))), 2)
+        else:
+            alignment_score = 0.30
+            readiness_score = 0.40
+
+        if readiness_score >= 0.75:
+            readiness_tier = ReadinessTier.HIGH
+            entry_level = "advanced"
+        elif readiness_score >= 0.55:
+            readiness_tier = ReadinessTier.MODERATE
+            entry_level = "intermediate"
+        else:
+            readiness_tier = ReadinessTier.NEEDS_SCAFFOLDING
+            entry_level = "foundational"
+
+        # 8. Grounded executive summary
+        stage_desc = f" ({profile.stage.value} stage)" if profile.stage else ""
+        exec_parts = [
+            f"Learner {profile.learner_id}{stage_desc} is targeting '{target_role}'."
+        ]
+        if profile.declared_skills:
+            exec_parts.append(f"Demonstrates {prof_level} baseline across {len(profile.declared_skills)} declared skills.")
+        elif concept_mastery:
+            exec_parts.append(f"Diagnostic mastery evaluated across {len(concept_mastery)} concepts.")
+        else:
+            exec_parts.append("Profile has no declared skills or prior projects, requiring foundational scaffolding.")
+
+        if pref_medium:
+            exec_parts.append(f"Prefers {pref_medium} learning style.")
+        if weekly_hours is not None:
+            exec_parts.append(f"Committed to {weekly_hours}h/week study schedule.")
 
         return LearnerIntelligenceReport(
             learner_id=profile.learner_id,
-            stage=profile.stage,
-            target_role=profile.target_role,
-            executive_summary=(
-                f"Learner {profile.learner_id} is in {profile.stage.value} stage pursuing '{profile.target_role}'. "
-                f"Demonstrates {prof_level} baseline competency ({avg_rating:.1f}/5 avg) with {profile.preferences.preferred_medium} learning preference."
-            ),
+            stage=profile.get_effective_stage(),
+            target_role=target_role,
+            executive_summary=" ".join(exec_parts),
             skill_analysis=SkillAnalysis(
-                baseline_summary=f"Demonstrated self-assessed average competency of {avg_rating:.1f}/5 across {len(profile.declared_skills)} declared skills.",
+                baseline_summary=baseline_summary,
                 proficiency_level=prof_level,
-                core_strengths=top_skills or ["Foundational Problem Solving"],
+                core_strengths=strengths,
                 critical_skill_gaps=skill_gaps,
             ),
             knowledge_analysis=KnowledgeAnalysis(
                 conceptual_depth="foundational" if prof_level == "beginner" else "applied",
                 prerequisite_health="needs_remediation" if prof_level == "beginner" else "solid",
-                theoretical_vs_applied_balance=(
-                    "Prefers practical project-building with scaffolding"
-                    if profile.preferences.practical_vs_theory_ratio >= 0.5
-                    else "Prefers conceptual foundations first"
-                ),
-                recommended_foundation_topics=[
-                    "Data Structures & Algorithmic Thinking",
-                    "API Design Principles",
-                    f"{profile.target_role} Core Fundamentals",
-                ],
+                theoretical_vs_applied_balance=theoretical_vs_applied,
+                recommended_foundation_topics=foundation_topics,
             ),
             learning_style=LearningStyleProfile(
-                dominant_modality=profile.preferences.preferred_medium,
-                secondary_modality="interactive",
-                recommended_pacing=pacing,
+                dominant_modality=dominant_modality,
+                secondary_modality="interactive" if dominant_modality != "interactive" else "visual",
+                recommended_pacing=effective_pacing,
                 feedback_cadence="Immediate feedback after every worked practice task",
-                content_format_priorities=["visual_spec", "worked_example", "practice_task"],
+                content_format_priorities=["worked_example", "practice_task", "visual_spec"],
             ),
             career_goals=CareerGoalProfile(
-                target_role=profile.target_role,
-                role_alignment_score=round(min(1.0, max(0.2, avg_rating / 5.0)), 2),
+                target_role=target_role,
+                role_alignment_score=alignment_score,
                 key_milestones=[
-                    f"Milestone 1: Core {profile.target_role} foundations",
+                    f"Milestone 1: Core {target_role} fundamentals",
                     "Milestone 2: Guided end-to-end project implementation",
-                    "Milestone 3: Advanced domain design and optimization",
+                    "Milestone 3: Advanced domain design and production optimization",
                 ],
                 high_priority_competencies=[
-                    "Modular System Design",
-                    "Clean Code & Error Handling",
-                    "Performance Profiling",
+                    f"{target_role} Core Competencies",
+                    "Modular System Architecture",
+                    "Testing & Reliability Automation",
                 ],
-                estimated_timeline_months=max(3, int(300 / max(1, profile.preferences.weekly_hours * 4))),
+                estimated_timeline_months=timeline_months,
             ),
             motivation=MotivationProfile(
-                primary_driver=primary_driver,
+                primary_driver="career_growth" if not profile.motivation_statement else "learner_stated_goal",
                 intrinsic_vs_extrinsic="balanced",
                 engagement_hooks=[
-                    "Milestone-based interactive code builds",
-                    "Real-world scenario simulation",
+                    "Hands-on milestone builds",
+                    "Real-world scenario simulations",
                 ],
                 potential_frustration_triggers=[
-                    "Abstract theoretical lectures without immediate coding",
-                    "Steep difficulty spikes in algorithmic concepts",
+                    "Abstract theoretical lectures without applied examples",
+                    "Steep unassisted difficulty leaps",
                 ],
                 resilience_advice="Break complex problems into verifiable 15-minute micro-objectives.",
             ),
@@ -384,9 +542,9 @@ class MockLLMProvider(BaseLLMProvider):
                 readiness_tier=readiness_tier,
                 recommended_entry_level=entry_level,
                 onboarding_recommendations=[
-                    "Complete foundational prerequisite refresher",
-                    "Set up first guided portfolio project milestone",
-                    "Schedule regular weekly study sprints",
+                    "Complete foundational prerequisite orientation",
+                    "Set up initial guided project milestone",
+                    "Calibrate weekly study schedule",
                 ],
             ),
         )
@@ -518,6 +676,8 @@ class GroqLLMProvider(BaseLLMProvider):
             "Analyze the learner onboarding profile across all 6 core dimensions: "
             "1. Skill Analysis, 2. Knowledge Analysis, 3. Learning Style, "
             "4. Career Goals, 5. Motivation, 6. Readiness. "
+            "CRITICAL: Base your evaluation strictly on the provided profile. "
+            "Do NOT invent study hours, practical ratios, prior projects, or unstated skills if they are marked as not provided or none declared. "
             "Output strictly valid JSON adhering to the LearnerIntelligenceReport schema. "
             "Target output under 850 tokens. Do NOT output HTML, JSX, or conversational text."
         )

@@ -51,11 +51,15 @@ def validate_onboarding_profile(
         recommendations.append("Consider declaring secondary tools (e.g. Git, Docker, SQL) for more precise role gap analysis.")
 
     # 2. Weekly study hours calibration
-    if profile.preferences.weekly_hours < 5:
-        issues.append("Weekly commitment is under 5 hours. May prolong milestone progression.")
-        recommendations.append("Dedicate at least 6-10 hours weekly to ensure consistent momentum.")
-    elif profile.preferences.weekly_hours >= 40:
-        recommendations.append("High study volume detected (40+ h/week). Ensure pacing includes regular rest to avoid burnout.")
+    weekly_hours = profile.get_effective_weekly_hours()
+    if weekly_hours is not None:
+        if weekly_hours < 5:
+            issues.append("Weekly commitment is under 5 hours. May prolong milestone progression.")
+            recommendations.append("Dedicate at least 6-10 hours weekly to ensure consistent momentum.")
+        elif weekly_hours >= 40:
+            recommendations.append("High study volume detected (40+ h/week). Ensure pacing includes regular rest to avoid burnout.")
+    else:
+        recommendations.append("Specify estimated weekly study hours to enable accurate milestone timeline projections.")
 
     # 3. Target role and motivation
     if not profile.motivation_statement or len(profile.motivation_statement.strip()) < 10:
@@ -83,7 +87,7 @@ def validate_onboarding_profile(
         is_valid=True,
         learner_id=profile.learner_id,
         stage=profile.stage,
-        target_role=profile.target_role,
+        target_role=profile.get_effective_target_role(),
         issues=issues,
         recommendations=recommendations,
         declared_skills_count=skills_count,
@@ -139,11 +143,11 @@ def analyze_onboarding_profile(
     """AI/ML-2 capability interface: Produces multi-dimensional Learner Intelligence from onboarding profile.
     Stateless, secure, and privacy-preserving.
     """
-    # Safe, non-sensitive logging
+    stage_str = profile.stage.value if profile.stage else "unspecified"
     print(
         f">>> [API /api/v1/onboarding] Processing request: "
-        f"learner='{profile.learner_id}', stage='{profile.stage.value}', "
-        f"role='{profile.target_role}', declared_skills={len(profile.declared_skills)}"
+        f"learner='{profile.learner_id}', stage='{stage_str}', "
+        f"role='{profile.get_effective_target_role()}', declared_skills={len(profile.declared_skills)}"
     )
 
     provider = get_llm_provider()
