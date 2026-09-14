@@ -4,6 +4,14 @@ from app.api.v1.api import api_router
 
 tags_metadata = [
     {
+        "name": "Memory Intelligence",
+        "description": "AI/ML-2 Capabilities: Learner Memory Engine, Context Retrieval & Roadmap Adaptation.",
+    },
+    {
+        "name": "Identity & Onboarding Intelligence",
+        "description": "AI/ML-2 Capabilities: Multi-Dimensional Learner Profiling & Readiness Assessment.",
+    },
+    {
         "name": "Learning Intelligence",
         "description": "AI/ML-2 Capabilities: Pedagogy Decision & Structured Lesson Generation.",
     },

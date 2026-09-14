@@ -32,6 +32,30 @@ from app.schemas.intelligence import (
     LearnerIntelligenceReport,
 )
 
+from app.schemas.memory import (
+    PreferenceMemory,
+    ConversationMemory,
+    LearningHistoryMemory,
+    ProjectMemory,
+    GoalMemory,
+    AchievementMemory,
+    FrictionMemory,
+    LearnerMemory,
+)
+from app.schemas.memory_events import (
+    MemoryEventType,
+    EvidenceSource,
+    MemoryUpdateEvent,
+    MemoryUpdateResult,
+)
+from app.schemas.memory_context import (
+    RelevantMemoryQuery,
+    RelevantMemoryContext,
+    RoadmapStatus,
+    RoadmapRecommendedAction,
+    RoadmapAdaptationContext,
+)
+
 __all__ = [
     "LearnerStage",
     "ConfidenceLevel",
@@ -60,4 +84,21 @@ __all__ = [
     "MotivationProfile",
     "ReadinessAssessment",
     "LearnerIntelligenceReport",
+    "PreferenceMemory",
+    "ConversationMemory",
+    "LearningHistoryMemory",
+    "ProjectMemory",
+    "GoalMemory",
+    "AchievementMemory",
+    "FrictionMemory",
+    "LearnerMemory",
+    "MemoryEventType",
+    "EvidenceSource",
+    "MemoryUpdateEvent",
+    "MemoryUpdateResult",
+    "RelevantMemoryQuery",
+    "RelevantMemoryContext",
+    "RoadmapStatus",
+    "RoadmapRecommendedAction",
+    "RoadmapAdaptationContext",
 ]

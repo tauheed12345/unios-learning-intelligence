@@ -56,11 +56,26 @@ def extract_json_payload(raw_text: str) -> str:
         if match:
             text = match.group(1).strip()
 
-    # Locate outermost JSON object braces
+    # Locate outermost JSON object braces or array brackets
     first_brace = text.find("{")
     last_brace = text.rfind("}")
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        text = text[first_brace : last_brace + 1].strip()
+    first_bracket = text.find("[")
+    last_bracket = text.rfind("]")
+
+    start_idx = -1
+    end_idx = -1
+
+    if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+        if last_brace != -1 and last_brace > first_brace:
+            start_idx = first_brace
+            end_idx = last_brace + 1
+    elif first_bracket != -1:
+        if last_bracket != -1 and last_bracket > first_bracket:
+            start_idx = first_bracket
+            end_idx = last_bracket + 1
+
+    if start_idx != -1 and end_idx != -1:
+        text = text[start_idx:end_idx].strip()
 
     return text
 
@@ -658,12 +673,34 @@ class GroqLLMProvider(BaseLLMProvider):
         json_text = extract_json_payload(raw_content)
         try:
             data = json.loads(json_text)
-            blocks = [LessonBlock.model_validate(b) for b in data.get("blocks", [])]
+            raw_blocks = None
+            if isinstance(data, dict):
+                raw_blocks = data.get("blocks") or data.get("lesson_blocks") or data.get("items") or data.get("content")
+            elif isinstance(data, list):
+                raw_blocks = data
+
+            if not raw_blocks or not isinstance(raw_blocks, list):
+                raise ValueError("Payload did not contain a valid list of lesson blocks.")
+
+            normalized_blocks = []
+            for b in raw_blocks:
+                if isinstance(b, dict):
+                    # Defensively repair block type casing/formatting
+                    if "type" in b and isinstance(b["type"], str):
+                        clean_type = b["type"].strip().lower().replace(" ", "_").replace("-", "_")
+                        valid_types = {t.value for t in LessonBlockType}
+                        if clean_type in valid_types:
+                            b["type"] = clean_type
+                    normalized_blocks.append(LessonBlock.model_validate(b))
+
+            if not normalized_blocks:
+                raise ValueError("Parsed zero valid lesson blocks from response.")
+
             return GeneratedLesson(
                 context_id=context_id,
                 topic=topic,
                 pedagogy_decision=pedagogy_decision,
-                blocks=blocks,
+                blocks=normalized_blocks,
             )
         except Exception as e:
             raise LLMParseError(f"Failed to parse lesson blocks from LLM: {str(e)}", raw_content=raw_content)

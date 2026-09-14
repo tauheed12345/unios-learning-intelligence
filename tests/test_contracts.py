@@ -266,6 +266,56 @@ class TestSprint1IntelligenceHarness(unittest.TestCase):
         self.assertEqual(data["topic"], "Graph Traversal")
         self.assertGreaterEqual(len(data["blocks"]), 1)
 
+    def test_sprint1_generate_lesson_alias_endpoint(self):
+        """Verify alias HTTP POST /api/v1/learning/generate-lesson functions identically and returns 200."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_test_002",
+            "topic": "Dynamic Programming",
+            "objective": "Understand memoization vs tabulation",
+            "learner_state": {
+                "learner_id": "bach_dp_01",
+                "stage": "bachelor",
+                "confidence": "low",
+            },
+        }
+        response = client.post("/api/v1/learning/generate-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["topic"], "Dynamic Programming")
+        self.assertEqual(data["context_id"], "ctx_test_002")
+        self.assertGreaterEqual(len(data["blocks"]), 1)
+
+    def test_generate_lesson_provider_error_handling(self):
+        """Verify provider errors are caught cleanly and return 502 instead of unhandled 500."""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from app.services import LLMParseError
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_err_001",
+            "topic": "Error Handling",
+            "objective": "Verify resilience",
+            "learner_state": {
+                "learner_id": "err_user",
+                "stage": "bachelor",
+                "confidence": "low",
+            },
+        }
+        with patch.object(
+            self.provider.__class__,
+            "generate_lesson",
+            side_effect=LLMParseError("Simulated parse failure", raw_content="malformed json"),
+        ):
+            response = client.post("/api/v1/learning/generate-lesson", json=payload)
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("Simulated parse failure", response.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
