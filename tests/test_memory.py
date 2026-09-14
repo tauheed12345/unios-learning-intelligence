@@ -506,6 +506,102 @@ class TestSprint3MemoryIntelligence(unittest.TestCase):
         retrieved = self.engine.get_or_create_memory(unicode_id)
         self.assertEqual(retrieved.learner_id, unicode_id)
 
+    # 21. Explicit assessment threshold boundary tests (poor < 0.50, high > 0.85)
+    def test_21_exact_assessment_threshold_boundaries(self):
+        """Verify exact boundary behavior:
+        - score 0.82 must NOT resolve friction or indicate mastery (under threshold)
+        - score 0.85 must NOT resolve friction (strictly > 0.85 required)
+        - score 0.86 must resolve/de-escalate friction (> 0.85 met)
+        - score 0.90 must resolve/de-escalate friction and grant mastery
+        """
+        learner_id = "threshold_boundary_student"
+
+        # Step 1: Establish active friction with poor assessment score (0.40 < 0.50)
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.ASSESSMENT_RESULT,
+                confidence_score=0.95,
+                payload={"topic": "Pointers", "score": 0.40},
+            )
+        )
+        mem = self.engine.get_or_create_memory(learner_id)
+        friction_pointers = [f for f in mem.friction if f.topic == "Pointers"]
+        self.assertEqual(len(friction_pointers), 1)
+        self.assertTrue(friction_pointers[0].unresolved)
+
+        # Step 2: Score 0.82 must NOT resolve friction (0.82 <= 0.85)
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.ASSESSMENT_RESULT,
+                confidence_score=1.0,
+                payload={"topic": "Pointers", "score": 0.82},
+            )
+        )
+        mem = self.engine.get_or_create_memory(learner_id)
+        self.assertTrue(
+            any(f.topic == "Pointers" and f.unresolved for f in mem.friction),
+            "Score 0.82 must not resolve friction (strictly > 0.85 required)",
+        )
+
+        # Step 3: Score 0.85 must NOT resolve friction (strictly > 0.85 required)
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.LESSON_COMPLETED,
+                confidence_score=1.0,
+                payload={"topic": "Pointers", "score": 0.85},
+            )
+        )
+        mem = self.engine.get_or_create_memory(learner_id)
+        self.assertTrue(
+            any(f.topic == "Pointers" and f.unresolved for f in mem.friction),
+            "Score 0.85 must not resolve friction (strictly > 0.85 required)",
+        )
+
+        # Step 4: Score 0.86 must resolve/de-escalate friction (0.86 > 0.85)
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.ASSESSMENT_RESULT,
+                confidence_score=1.0,
+                payload={"topic": "Pointers", "score": 0.86},
+            )
+        )
+        mem = self.engine.get_or_create_memory(learner_id)
+        self.assertTrue(
+            all(not f.unresolved for f in mem.friction if f.topic == "Pointers"),
+            "Score 0.86 must resolve friction (0.86 > 0.85)",
+        )
+
+        # Step 5: Test score 0.90 on a new struggling topic
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.REPEATED_MISTAKE,
+                payload={"topic": "Memory Leaks"},
+            )
+        )
+        mem = self.engine.get_or_create_memory(learner_id)
+        self.assertTrue(any(f.topic == "Memory Leaks" and f.unresolved for f in mem.friction))
+
+        # Score 0.90 resolves friction and creates mastery achievement
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.ASSESSMENT_RESULT,
+                confidence_score=1.0,
+                payload={"topic": "Memory Leaks", "score": 0.90},
+            )
+        )
+        mem = self.engine.get_or_create_memory(learner_id)
+        self.assertTrue(
+            all(not f.unresolved for f in mem.friction if f.topic == "Memory Leaks"),
+            "Score 0.90 must resolve friction",
+        )
+        self.assertTrue(any("Topic Mastery: Memory Leaks" in a.title for a in mem.achievements))
+
 
 if __name__ == "__main__":
     unittest.main()

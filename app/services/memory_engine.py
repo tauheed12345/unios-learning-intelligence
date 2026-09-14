@@ -105,7 +105,7 @@ class MemoryEngine:
 
             # Performance correlation
             if score_float is not None:
-                if score_float >= 0.8:
+                if score_float > 0.85:
                     # High performance resolves active friction on this topic
                     for f in memory.friction:
                         if f.topic.lower() == topic.lower() and f.unresolved:
@@ -157,7 +157,7 @@ class MemoryEngine:
             memory.learning_history.append(history_entry)
             updated_facets.append("learning_history")
 
-            if score_float >= 0.8:
+            if score_float > 0.85:
                 # De-escalate friction
                 for f in memory.friction:
                     if f.topic.lower() == topic.lower() and f.unresolved:
@@ -483,7 +483,7 @@ class MemoryEngine:
         # 4. Synthesize strengths and weaknesses
         detected_strengths: List[str] = []
         for h in memory.learning_history:
-            if h.mastery_level >= 0.75 and h.topic not in detected_strengths:
+            if h.mastery_level > 0.85 and h.topic not in detected_strengths:
                 detected_strengths.append(h.topic)
         for a in memory.achievements:
             if a.category == "mastery" and a.title.replace("Topic Mastery: ", "").replace("Mastered: ", "") not in detected_strengths:
@@ -545,7 +545,7 @@ class MemoryEngine:
         high_severity_friction = [f for f in unresolved_friction if f.severity == "high"]
 
         mastered = [
-            h.topic for h in memory.learning_history if h.mastery_level >= 0.8
+            h.topic for h in memory.learning_history if h.mastery_level > 0.85
         ]
 
         # Case 1: High friction or multiple unresolved topics -> Needs Remediation
