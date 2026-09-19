@@ -47,6 +47,7 @@ from app.schemas.memory_events import (
     EvidenceSource,
     MemoryUpdateEvent,
     MemoryUpdateResult,
+    MemorySeedResult,
 )
 from app.schemas.memory_context import (
     RelevantMemoryQuery,
@@ -96,6 +97,7 @@ __all__ = [
     "EvidenceSource",
     "MemoryUpdateEvent",
     "MemoryUpdateResult",
+    "MemorySeedResult",
     "RelevantMemoryQuery",
     "RelevantMemoryContext",
     "RoadmapStatus",

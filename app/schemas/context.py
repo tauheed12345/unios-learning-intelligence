@@ -1,6 +1,7 @@
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from app.schemas.learner import LearnerState
+from app.schemas.memory_context import RelevantMemoryContext
 
 
 class NormalizedLearningContext(BaseModel):
@@ -15,3 +16,7 @@ class NormalizedLearningContext(BaseModel):
         description="Grounded excerpts from syllabus or approved textbooks",
     )
     time_budget_minutes: Optional[int] = 15
+    memory_context: Optional[RelevantMemoryContext] = Field(
+        default=None,
+        description="Optional scoped memory intelligence from AI/ML-2 Memory Engine",
+    )

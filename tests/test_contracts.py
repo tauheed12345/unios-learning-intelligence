@@ -9,10 +9,15 @@ from app.schemas import (
     LessonBlockType,
 )
 from app.core.config import settings
+from app.schemas.memory_context import RelevantMemoryContext
+from app.schemas.memory import PreferenceMemory, FrictionMemory, GoalMemory
+from app.schemas.memory_events import MemoryUpdateEvent, MemoryEventType, EvidenceSource
 from app.services import (
     build_pedagogy_prompt,
     build_lesson_prompt,
     get_llm_provider,
+    get_memory_repository,
+    get_memory_engine,
 )
 
 
@@ -316,8 +321,221 @@ class TestSprint1IntelligenceHarness(unittest.TestCase):
             self.assertEqual(response.status_code, 502)
             self.assertIn("Simulated parse failure", response.json()["detail"])
 
+    # A. Existing request without memory_context still returns 200 (backward compatibility)
+    def test_lesson_planning_without_memory_context_backward_compatible(self):
+        """Verify POST /api/v1/learning/plan-lesson without memory_context returns 200."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_compat_001",
+            "topic": "Recursion Basics",
+            "objective": "Understand base cases and recursive calls",
+            "learner_state": {
+                "learner_id": "compat_user_no_mem",
+                "stage": "bachelor",
+                "confidence": "medium",
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["topic"], "Recursion Basics")
+        self.assertIn("pedagogy_decision", data)
+        self.assertGreater(len(data["blocks"]), 0)
+
+    # B. Explicit memory_context is accepted and used
+    def test_lesson_planning_with_explicit_memory_context(self):
+        """Verify explicit memory_context passed in payload is recognized and informs pedagogy."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_explicit_mem_001",
+            "topic": "Binary Search",
+            "objective": "Understand search space halving",
+            "learner_state": {
+                "learner_id": "explicit_mem_student",
+                "stage": "bachelor",
+                "confidence": "low",
+            },
+            "memory_context": {
+                "learner_id": "explicit_mem_student",
+                "topic": "Binary Search",
+                "relevant_preferences": {
+                    "dominant_modality": "interactive",
+                    "pacing": "standard",
+                    "practical_vs_theory_ratio": 0.85,
+                },
+                "relevant_friction": [
+                    {
+                        "topic": "Binary Search",
+                        "struggle_type": "conceptual_gap",
+                        "severity": "high",
+                        "mistake_count": 3,
+                        "unresolved": True,
+                        "recommended_intervention": "Visual breakdown of boundary conditions",
+                    }
+                ],
+                "active_goal": {
+                    "primary_target_role": "Backend Engineer",
+                },
+                "recommended_pedagogical_mode": "interactive",
+                "rationale": "High-severity friction detected on Binary Search. Immediate remediation required.",
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        pedagogy = data["pedagogy_decision"]
+        # Active struggle on Binary Search triggers REMEDIATION strategy
+        self.assertEqual(pedagogy["strategy"], TeachingStrategy.REMEDIATION.value)
+        self.assertEqual(pedagogy["presentation_mode"], "interactive")
+
+    # C. learner_id + no explicit memory_context automatically retrieves relevant memory
+    def test_lesson_planning_auto_retrieves_memory_from_learner_id(self):
+        """Verify that a learner with existing memory has relevant context auto-retrieved."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        learner_id = "auto_retrieve_user_001"
+        repo = get_memory_repository()
+        repo.clear(learner_id)
+        engine = get_memory_engine()
+
+        # Seed memory preference for interactive mode
+        engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.PREFERENCE_OBSERVED,
+                evidence_source=EvidenceSource.EXPLICIT,
+                payload={"dominant_modality": "interactive"},
+            )
+        )
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_auto_001",
+            "topic": "Sorting Algorithms",
+            "objective": "Understand Quicksort pivot selection",
+            "learner_state": {
+                "learner_id": learner_id,
+                "stage": "bachelor",
+                "confidence": "medium",
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        pedagogy = data["pedagogy_decision"]
+        # Automatically inferred presentation_mode from retrieved memory preference
+        self.assertEqual(pedagogy["presentation_mode"], "interactive")
+
+    # D. Learner with active friction receives a context-aware pedagogy decision (remediation)
+    def test_lesson_planning_with_active_friction_triggers_remediation(self):
+        """Verify active friction in memory automatically steers pedagogy to REMEDIATION."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        learner_id = "struggling_student_001"
+        repo = get_memory_repository()
+        repo.clear(learner_id)
+        engine = get_memory_engine()
+
+        # Record friction on Python Functions
+        engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.TOPIC_STRUGGLED,
+                evidence_source=EvidenceSource.OBSERVED,
+                confidence_score=0.95,
+                payload={"topic": "Python Functions", "struggle_type": "conceptual_gap"},
+            )
+        )
+        engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.REPEATED_MISTAKE,
+                evidence_source=EvidenceSource.OBSERVED,
+                confidence_score=0.95,
+                payload={"topic": "Python Functions"},
+            )
+        )
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_fric_001",
+            "topic": "Python Functions",
+            "objective": "Master function scoping and closures",
+            "learner_state": {
+                "learner_id": learner_id,
+                "stage": "bachelor",
+                "confidence": "low",
+                "weak_topics": ["Python Functions"],
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        pedagogy = data["pedagogy_decision"]
+        self.assertEqual(pedagogy["strategy"], TeachingStrategy.REMEDIATION.value)
+        self.assertIn("remediation", pedagogy["rationale"].lower())
+
+    # E. Unknown learner does not crash lesson planning
+    def test_lesson_planning_unknown_learner_no_crash(self):
+        """Verify that querying a brand new, unknown learner handles baseline defaults safely."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_unknown_001",
+            "topic": "Linear Algebra",
+            "objective": "Vector dot product",
+            "learner_state": {
+                "learner_id": "unknown_student_xyz_9999",
+                "stage": "bachelor",
+                "confidence": "medium",
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["topic"], "Linear Algebra")
+        self.assertGreater(len(data["blocks"]), 0)
+
+    # F. Empty memory does not crash lesson planning
+    def test_lesson_planning_empty_memory_no_crash(self):
+        """Verify registered learner with empty memory history plans lessons smoothly."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        learner_id = "empty_mem_user_001"
+        repo = get_memory_repository()
+        repo.clear(learner_id)
+        # Pre-create blank container
+        engine = get_memory_engine()
+        engine.get_or_create_memory(learner_id)
+
+        client = TestClient(app)
+        payload = {
+            "context_id": "ctx_empty_mem_001",
+            "topic": "Object Oriented Programming",
+            "objective": "Polymorphism and inheritance",
+            "learner_state": {
+                "learner_id": learner_id,
+                "stage": "bachelor",
+                "confidence": "high",
+            },
+        }
+        response = client.post("/api/v1/learning/plan-lesson", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["topic"], "Object Oriented Programming")
+        self.assertGreater(len(data["blocks"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-

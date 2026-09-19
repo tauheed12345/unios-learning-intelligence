@@ -19,7 +19,19 @@ from app.schemas.memory_events import (
     EvidenceSource,
     MemoryUpdateEvent,
     MemoryUpdateResult,
+    MemorySeedResult,
 )
+from app.schemas.intelligence import (
+    LearnerIntelligenceReport,
+    SkillAnalysis,
+    KnowledgeAnalysis,
+    LearningStyleProfile,
+    CareerGoalProfile,
+    MotivationProfile,
+    ReadinessAssessment,
+    ReadinessTier,
+)
+from app.schemas.learner import LearnerStage
 from app.schemas.memory_context import (
     RelevantMemoryQuery,
     RelevantMemoryContext,
@@ -601,6 +613,456 @@ class TestSprint3MemoryIntelligence(unittest.TestCase):
             "Score 0.90 must resolve friction",
         )
         self.assertTrue(any("Topic Mastery: Memory Leaks" in a.title for a in mem.achievements))
+
+    # 22. Successful onboarding memory initialization
+    def test_22_initialize_memory_from_onboarding_success(self):
+        """Verify initialize_memory_from_onboarding seeds goals, preferences, skills, and metadata."""
+        learner_id = "onboarding_seed_student"
+        report = LearnerIntelligenceReport(
+            learner_id=learner_id,
+            stage=LearnerStage.BACHELOR,
+            target_role="AI/ML Engineer",
+            executive_summary="Learner has strong Python and Math foundations with career focus on AI/ML.",
+            skill_analysis=SkillAnalysis(
+                baseline_summary="Strong programming fundamentals, ready for ML algorithms.",
+                proficiency_level="intermediate",
+                core_strengths=["Python", "Linear Algebra"],
+                critical_skill_gaps=["PyTorch", "MLOps"],
+            ),
+            knowledge_analysis=KnowledgeAnalysis(
+                conceptual_depth="applied",
+                prerequisite_health="solid",
+                theoretical_vs_applied_balance="applied",
+                recommended_foundation_topics=["Probability", "Optimization"],
+            ),
+            learning_style=LearningStyleProfile(
+                dominant_modality="interactive",
+                secondary_modality="visual",
+                recommended_pacing="accelerated",
+                feedback_cadence="milestone",
+                content_format_priorities=["worked_examples", "code_challenges"],
+            ),
+            career_goals=CareerGoalProfile(
+                target_role="AI/ML Engineer",
+                role_alignment_score=0.85,
+                key_milestones=["Math for ML", "Deep Learning Foundations", "Production Model Deployment"],
+                high_priority_competencies=["Model Optimization", "Data Pipelines"],
+                estimated_timeline_months=6,
+            ),
+            motivation=MotivationProfile(
+                primary_driver="career_transition",
+                intrinsic_vs_extrinsic="mostly_intrinsic",
+                engagement_hooks=["Computer Vision", "Applied Neural Nets"],
+                potential_frustration_triggers=["Dense theoretical proofs"],
+                resilience_advice="Build hands-on prototypes first.",
+            ),
+            readiness=ReadinessAssessment(
+                overall_readiness_score=0.90,
+                readiness_tier=ReadinessTier.HIGH,
+                recommended_entry_level="intermediate",
+                onboarding_recommendations=["Proceed directly to neural network fundamentals"],
+            ),
+        )
+
+        result = self.engine.initialize_memory_from_onboarding(report)
+        self.assertTrue(result.success)
+        self.assertTrue(result.is_new_initialization)
+        self.assertEqual(result.learner_id, learner_id)
+        self.assertIn("goals", result.seeded_facets)
+        self.assertIn("preferences", result.seeded_facets)
+        self.assertIn("metadata", result.seeded_facets)
+
+        # Retrieve and inspect memory container
+        mem = self.engine.get_or_create_memory(learner_id)
+        self.assertEqual(mem.goals.primary_target_role, "AI/ML Engineer")
+        self.assertEqual(mem.goals.target_timeline_months, 6)
+        self.assertIn("Math for ML", mem.goals.milestones)
+        self.assertIn("Computer Vision", mem.goals.secondary_interests)
+        # Goal change history must be clean (initialization, not a role shift)
+        self.assertEqual(len(mem.goals.goal_change_history), 0)
+
+        # Preferences
+        self.assertEqual(mem.preferences.dominant_modality, "interactive")
+        self.assertEqual(mem.preferences.secondary_modality, "visual")
+        self.assertEqual(mem.preferences.pacing, "accelerated")
+        self.assertAlmostEqual(mem.preferences.practical_vs_theory_ratio, 0.8)
+        self.assertIn("code_challenges", mem.preferences.content_format_priorities)
+
+        # Metadata
+        self.assertTrue(mem.metadata.get("onboarding_seeded"))
+        self.assertEqual(mem.metadata.get("academic_stage"), "bachelor")
+        self.assertIn("Python", mem.metadata.get("baseline_skills", []))
+        self.assertIn("PyTorch", mem.metadata.get("critical_skill_gaps", []))
+        self.assertEqual(mem.metadata.get("readiness_tier"), "high")
+
+        # Milestone achievement for high readiness
+        self.assertTrue(any(a.title == "Onboarding Excellence" for a in mem.achievements))
+
+        # Event audit trail
+        events = self.repo.list_events(learner_id)
+        self.assertTrue(len(events) >= 1)
+        self.assertEqual(events[0].payload.get("source"), "onboarding_intelligence_report")
+
+    # 23. Idempotent initialization
+    def test_23_initialize_memory_from_onboarding_idempotent(self):
+        """Verify repeated calls do not duplicate milestones, skills, or format priorities."""
+        learner_id = "idempotent_student"
+        report = LearnerIntelligenceReport(
+            learner_id=learner_id,
+            stage=LearnerStage.BACHELOR,
+            target_role="Backend Developer",
+            career_goals=CareerGoalProfile(
+                target_role="Backend Developer",
+                key_milestones=["Milestone A", "Milestone B"],
+            ),
+            learning_style=LearningStyleProfile(
+                dominant_modality="hands-on",
+                content_format_priorities=["worked_examples"],
+            ),
+            skill_analysis=SkillAnalysis(
+                core_strengths=["Go", "SQL"],
+                critical_skill_gaps=["Kafka"],
+            ),
+            readiness=ReadinessAssessment(
+                overall_readiness_score=0.75,
+                readiness_tier=ReadinessTier.MODERATE,
+            ),
+        )
+
+        # First call: fresh initialization
+        res1 = self.engine.initialize_memory_from_onboarding(report)
+        self.assertTrue(res1.is_new_initialization)
+
+        # Second call: idempotent update
+        res2 = self.engine.initialize_memory_from_onboarding(report)
+        self.assertFalse(res2.is_new_initialization)
+
+        mem = self.engine.get_or_create_memory(learner_id)
+        # Milestones must not be duplicated
+        self.assertEqual(mem.goals.milestones.count("Milestone A"), 1)
+        self.assertEqual(mem.goals.milestones.count("Milestone B"), 1)
+
+        # Content format priorities must not be duplicated
+        self.assertEqual(mem.preferences.content_format_priorities.count("worked_examples"), 1)
+
+        # Baseline skills must not be duplicated
+        self.assertEqual(mem.metadata["baseline_skills"].count("Go"), 1)
+        self.assertEqual(mem.metadata["critical_skill_gaps"].count("Kafka"), 1)
+
+    # 24. Existing learner history is preserved
+    def test_24_initialize_memory_from_onboarding_preserves_existing_history(self):
+        """Verify existing learning history, active friction, and projects are not overwritten."""
+        learner_id = "existing_history_student"
+
+        # Pre-populate existing history & friction
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.LESSON_COMPLETED,
+                payload={"topic": "Binary Trees", "score": 0.92},
+            )
+        )
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.TOPIC_STRUGGLED,
+                payload={"topic": "Graph Algorithms"},
+            )
+        )
+        self.engine.record_event(
+            MemoryUpdateEvent(
+                learner_id=learner_id,
+                event_type=MemoryEventType.PROJECT_COMPLETED,
+                payload={"title": "Custom Shell", "technologies_used": ["C"]},
+            )
+        )
+
+        mem_before = self.engine.get_or_create_memory(learner_id)
+        self.assertEqual(len(mem_before.learning_history), 1)
+        self.assertEqual(len(mem_before.friction), 1)
+        self.assertEqual(len(mem_before.projects), 1)
+
+        # Now execute onboarding seeding
+        report = LearnerIntelligenceReport(
+            learner_id=learner_id,
+            stage=LearnerStage.MASTER,
+            target_role="Systems Engineer",
+            learning_style=LearningStyleProfile(dominant_modality="theoretical"),
+        )
+        result = self.engine.initialize_memory_from_onboarding(report)
+        self.assertTrue(result.success)
+
+        mem_after = self.engine.get_or_create_memory(learner_id)
+        # Existing history, friction, and projects MUST remain intact
+        self.assertEqual(len(mem_after.learning_history), 1)
+        self.assertEqual(mem_after.learning_history[0].topic, "Binary Trees")
+        self.assertEqual(len(mem_after.friction), 1)
+        self.assertEqual(mem_after.friction[0].topic, "Graph Algorithms")
+        self.assertEqual(len(mem_after.projects), 1)
+        self.assertEqual(mem_after.projects[0].title, "Custom Shell")
+
+        # Goals and preferences successfully seeded
+        self.assertEqual(mem_after.goals.primary_target_role, "Systems Engineer")
+        self.assertEqual(mem_after.preferences.dominant_modality, "theoretical")
+
+    # 25. Malformed input error handling
+    def test_25_initialize_memory_from_onboarding_malformed_input(self):
+        """Verify ValueError is raised when given malformed or empty learner data."""
+        with self.assertRaises(ValueError):
+            self.engine.initialize_memory_from_onboarding(None)
+
+    # 26. API endpoint POST /api/v1/memory/seed-from-onboarding success
+    def test_26_seed_from_onboarding_api_endpoint(self):
+        """Verify API contract for POST /api/v1/memory/seed-from-onboarding."""
+        learner_id = "http_seed_user"
+        report_payload = {
+            "learner_id": learner_id,
+            "stage": "bachelor",
+            "target_role": "Data Engineer",
+            "executive_summary": "Aspiring data engineer with strong SQL skills.",
+            "skill_analysis": {
+                "baseline_summary": "SQL proficient, needs Spark and cloud data lakes.",
+                "proficiency_level": "intermediate",
+                "core_strengths": ["SQL", "Python"],
+                "critical_skill_gaps": ["Apache Spark", "Airflow"],
+            },
+            "knowledge_analysis": {
+                "conceptual_depth": "applied",
+                "prerequisite_health": "solid",
+                "theoretical_vs_applied_balance": "practical",
+                "recommended_foundation_topics": ["Relational Algebra"],
+            },
+            "learning_style": {
+                "dominant_modality": "hands-on",
+                "secondary_modality": "visual",
+                "recommended_pacing": "standard",
+                "feedback_cadence": "milestone",
+                "content_format_priorities": ["worked_examples", "code_challenges"],
+            },
+            "career_goals": {
+                "target_role": "Data Engineer",
+                "role_alignment_score": 0.8,
+                "key_milestones": ["Advanced SQL & Databases", "ETL Pipelines with Airflow", "Distributed Systems"],
+                "high_priority_competencies": ["Data Modeling", "ETL"],
+                "estimated_timeline_months": 5,
+            },
+            "motivation": {
+                "primary_driver": "career_growth",
+                "intrinsic_vs_extrinsic": "balanced",
+                "engagement_hooks": ["Big Data Analytics"],
+                "potential_frustration_triggers": [],
+                "resilience_advice": "Focus on pipeline projects.",
+            },
+            "readiness": {
+                "overall_readiness_score": 0.82,
+                "readiness_tier": "moderate",
+                "recommended_entry_level": "intermediate",
+                "onboarding_recommendations": ["Start with data warehouse architecture"],
+            },
+        }
+
+        # First call: 200 OK, is_new_initialization = True
+        resp = self.client.post("/api/v1/memory/seed-from-onboarding", json=report_payload)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["learner_id"], learner_id)
+        self.assertTrue(data["is_new_initialization"])
+        self.assertIn("goals", data["seeded_facets"])
+        self.assertIn("preferences", data["seeded_facets"])
+
+        # Second call: 200 OK, is_new_initialization = False (idempotent)
+        resp2 = self.client.post("/api/v1/memory/seed-from-onboarding", json=report_payload)
+        self.assertEqual(resp2.status_code, 200)
+        data2 = resp2.json()
+        self.assertTrue(data2["success"])
+        self.assertFalse(data2["is_new_initialization"])
+
+    # 27. API endpoint validation error handling
+    def test_27_seed_from_onboarding_api_validation_error(self):
+        """Verify API returns 422 Unprocessable Entity for malformed payloads."""
+        # Missing required target_role
+        resp = self.client.post("/api/v1/memory/seed-from-onboarding", json={"learner_id": "bad_user"})
+        self.assertEqual(resp.status_code, 422)
+
+    # 28. GET /api/v1/memory/{learner_id} for existing learner
+    def test_28_get_complete_memory_existing_learner(self):
+        """Verify GET /api/v1/memory/{learner_id} returns 200 and full 7-dimension schema."""
+        from app.services import get_memory_engine
+        learner_id = "test_get_existing_user_01"
+        mem = get_memory_engine().get_or_create_memory(learner_id)
+        mem.goals.primary_target_role = "Machine Learning Engineer"
+        mem.preferences.dominant_modality = "hands-on"
+        mem.friction.append(
+            FrictionMemory(
+                topic="Transformers",
+                struggle_type="conceptual",
+                severity="moderate",
+                mistake_count=2,
+                unresolved=True,
+                first_observed_at=datetime.now(timezone.utc),
+                last_observed_at=datetime.now(timezone.utc),
+            )
+        )
+        get_memory_engine().repository.save_memory(mem)
+
+        resp = self.client.get(f"/api/v1/memory/{learner_id}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Validate complete schema
+        validated = LearnerMemory.model_validate(data)
+        self.assertEqual(validated.learner_id, learner_id)
+        self.assertEqual(validated.goals.primary_target_role, "Machine Learning Engineer")
+        self.assertEqual(validated.preferences.dominant_modality, "hands-on")
+        self.assertEqual(len(validated.friction), 1)
+        self.assertEqual(validated.friction[0].topic, "Transformers")
+
+        # Verify all 7 memory dimensions exist in payload
+        for facet in ["preferences", "conversations", "learning_history", "projects", "goals", "achievements", "friction"]:
+            self.assertIn(facet, data)
+
+    # 29. GET /api/v1/memory/{learner_id} for unknown learner
+    def test_29_get_complete_memory_unknown_learner(self):
+        """Verify GET /api/v1/memory/{learner_id} returns 404 for unknown learners."""
+        resp = self.client.get("/api/v1/memory/totally_unknown_learner_99999")
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("not found", resp.json()["detail"].lower())
+
+        # Whitespace learner_id returns 422
+        resp_invalid = self.client.get("/api/v1/memory/%20%20")
+        self.assertEqual(resp_invalid.status_code, 422)
+
+    # 30. GET /api/v1/memory/{learner_id}/relevant with topic and objective
+    def test_30_get_relevant_memory_scoped(self):
+        """Verify GET /api/v1/memory/{learner_id}/relevant returns scoped context."""
+        from app.services import get_memory_engine
+        learner_id = "test_get_scoped_user_01"
+        mem = get_memory_engine().get_or_create_memory(learner_id)
+        mem.goals.primary_target_role = "Backend Developer"
+        mem.friction.append(
+            FrictionMemory(
+                topic="AsyncIO",
+                struggle_type="concurrency_deadlock",
+                severity="high",
+                mistake_count=3,
+                unresolved=True,
+                first_observed_at=datetime.now(timezone.utc),
+                last_observed_at=datetime.now(timezone.utc),
+            )
+        )
+        get_memory_engine().repository.save_memory(mem)
+
+        resp = self.client.get(
+            f"/api/v1/memory/{learner_id}/relevant?topic=AsyncIO&objective=Master%20event%20loop"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        validated = RelevantMemoryContext.model_validate(data)
+        self.assertEqual(validated.learner_id, learner_id)
+        self.assertEqual(validated.topic, "AsyncIO")
+        self.assertEqual(len(validated.relevant_friction), 1)
+        self.assertEqual(validated.relevant_friction[0].topic, "AsyncIO")
+
+    # 31. GET /api/v1/memory/{learner_id}/relevant for empty or unknown memory
+    def test_31_get_relevant_memory_empty_or_unknown(self):
+        """Verify GET /api/v1/memory/{learner_id}/relevant handles unknown learners gracefully with defaults."""
+        resp = self.client.get(
+            "/api/v1/memory/brand_new_unseeded_user_01/relevant?topic=Graphs&objective=BFS"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        validated = RelevantMemoryContext.model_validate(data)
+        self.assertEqual(validated.learner_id, "brand_new_unseeded_user_01")
+        self.assertEqual(validated.topic, "Graphs")
+        self.assertEqual(validated.relevant_friction, [])
+        self.assertEqual(validated.relevant_history, [])
+        self.assertEqual(validated.recommended_pedagogical_mode, "visual")
+
+    # 32. GET /api/v1/memory/{learner_id}/relevant parity with MemoryEngine
+    def test_32_get_relevant_memory_parity_with_engine(self):
+        """Verify GET endpoint matches direct MemoryEngine.retrieve_relevant_context() results."""
+        from app.services import get_memory_engine
+        learner_id = "test_parity_user_01"
+        engine = get_memory_engine()
+
+        # Engine direct call
+        query = RelevantMemoryQuery(
+            learner_id=learner_id,
+            topic="Dynamic Programming",
+            objective="Memoization vs Tabulation",
+        )
+        engine_context = engine.retrieve_relevant_context(query)
+
+        # API call
+        resp = self.client.get(
+            f"/api/v1/memory/{learner_id}/relevant?topic=Dynamic%20Programming&objective=Memoization%20vs%20Tabulation"
+        )
+        self.assertEqual(resp.status_code, 200)
+        api_data = resp.json()
+
+        self.assertEqual(api_data["learner_id"], engine_context.learner_id)
+        self.assertEqual(api_data["topic"], engine_context.topic)
+        self.assertEqual(api_data["recommended_pedagogical_mode"], engine_context.recommended_pedagogical_mode)
+
+    # 33. POST /api/v1/memory/seed alias endpoint
+    def test_33_seed_alias_endpoint(self):
+        """Verify POST /api/v1/memory/seed alias endpoint functions identically to /seed-from-onboarding."""
+        learner_id = "http_seed_alias_user"
+        report_payload = {
+            "learner_id": learner_id,
+            "stage": "bachelor",
+            "target_role": "Security Engineer",
+            "executive_summary": "Cybersecurity student interested in application security.",
+            "skill_analysis": {
+                "baseline_summary": "Network security basics, needs cryptography.",
+                "proficiency_level": "beginner",
+                "core_strengths": ["Networking"],
+                "critical_skill_gaps": ["Cryptography"],
+            },
+            "knowledge_analysis": {
+                "conceptual_depth": "applied",
+                "prerequisite_health": "solid",
+                "theoretical_vs_applied_balance": "practical",
+                "recommended_foundation_topics": ["Discrete Math"],
+            },
+            "learning_style": {
+                "dominant_modality": "hands-on",
+                "secondary_modality": "visual",
+                "recommended_pacing": "standard",
+                "feedback_cadence": "immediate",
+                "content_format_priorities": ["code_challenges"],
+            },
+            "career_goals": {
+                "target_role": "Security Engineer",
+                "role_alignment_score": 0.85,
+                "key_milestones": ["Web App Security", "Penetration Testing"],
+                "high_priority_competencies": ["Threat Modeling"],
+                "estimated_timeline_months": 6,
+            },
+            "motivation": {
+                "primary_driver": "problem_solving",
+                "intrinsic_vs_extrinsic": "intrinsic",
+                "engagement_hooks": ["Capture The Flag"],
+                "potential_frustration_triggers": [],
+                "resilience_advice": "Practice systematically.",
+            },
+            "readiness": {
+                "overall_readiness_score": 0.75,
+                "readiness_tier": "moderate",
+                "recommended_entry_level": "beginner",
+                "onboarding_recommendations": ["Start with OWASP Top 10"],
+            },
+        }
+
+        resp = self.client.post("/api/v1/memory/seed", json=report_payload)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["learner_id"], learner_id)
+        self.assertTrue(data["is_new_initialization"])
 
 
 if __name__ == "__main__":

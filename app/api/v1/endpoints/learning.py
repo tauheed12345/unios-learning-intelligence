@@ -1,9 +1,14 @@
 from fastapi import APIRouter, HTTPException, status
-from app.schemas import NormalizedLearningContext, GeneratedLesson
+from app.schemas import (
+    NormalizedLearningContext,
+    GeneratedLesson,
+    RelevantMemoryQuery,
+)
 from app.services import (
     build_pedagogy_prompt,
     build_lesson_prompt,
     get_llm_provider,
+    get_memory_engine,
     LLMProviderError,
     LLMParseError,
 )
@@ -46,6 +51,27 @@ def plan_and_generate_lesson(context: NormalizedLearningContext) -> GeneratedLes
     print(f"    - Learner:    {context.learner_state.learner_id} (Stage: {context.learner_state.stage.value})")
     print(f"    - Confidence: {context.learner_state.confidence.value}")
     print(f"    - Weaknesses: {context.learner_state.weak_topics}")
+
+    # 0. Enrich with memory context if not explicitly provided
+    if context.memory_context is None and context.learner_state and context.learner_state.learner_id:
+        clean_learner_id = context.learner_state.learner_id.strip()
+        if clean_learner_id:
+            try:
+                engine = get_memory_engine()
+                query = RelevantMemoryQuery(
+                    learner_id=clean_learner_id,
+                    topic=context.topic,
+                    objective=context.objective,
+                    target_role=context.learner_state.career_goal,
+                    current_learner_state=context.learner_state,
+                )
+                context.memory_context = engine.retrieve_relevant_context(query)
+                print(f"    - Memory:     Retrieved context for '{clean_learner_id}' (Friction count: {len(context.memory_context.relevant_friction)})")
+            except Exception as mem_err:
+                print(f"    - Memory:     Retrieval skipped gracefully: {mem_err}")
+                context.memory_context = None
+    elif context.memory_context is not None:
+        print(f"    - Memory:     Explicit context provided (Friction count: {len(context.memory_context.relevant_friction)})")
 
     provider = get_llm_provider()
 

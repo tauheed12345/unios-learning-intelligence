@@ -1,9 +1,14 @@
 from typing import Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.schemas.memory import LearnerMemory
-from app.schemas.memory_events import MemoryUpdateEvent, MemoryUpdateResult
+from app.schemas.memory_events import (
+    MemoryUpdateEvent,
+    MemoryUpdateResult,
+    MemorySeedResult,
+)
+from app.schemas.intelligence import LearnerIntelligenceReport
 from app.schemas.memory_context import (
     RelevantMemoryQuery,
     RelevantMemoryContext,
@@ -150,3 +155,125 @@ def get_roadmap_adaptation_context(request: RoadmapContextRequest) -> RoadmapAda
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error generating roadmap adaptation context: {str(err)}",
         )
+
+
+@router.post(
+    "/seed-from-onboarding",
+    response_model=MemorySeedResult,
+    status_code=status.HTTP_200_OK,
+    summary="Seed Learner Memory from Onboarding Intelligence",
+    description=(
+        "Idempotently bridges Sprint-2 Onboarding intelligence into the Sprint-3 LearnerMemory container. "
+        "Initializes career goals, cognitive preferences, pacing, format priorities, and metadata "
+        "without overwriting existing learner history."
+    ),
+    responses={
+        200: {"description": "Memory successfully seeded from onboarding report."},
+        422: {"description": "Validation error: Malformed or invalid onboarding report."},
+    },
+)
+@router.post(
+    "/seed",
+    response_model=MemorySeedResult,
+    status_code=status.HTTP_200_OK,
+    summary="Seed Learner Memory from Onboarding Intelligence (Alias)",
+    description="Alias endpoint for seeding learner memory from onboarding intelligence.",
+    responses={
+        200: {"description": "Memory successfully seeded from onboarding report."},
+        422: {"description": "Validation error: Malformed or invalid onboarding report."},
+    },
+)
+def seed_memory_from_onboarding(report: LearnerIntelligenceReport) -> MemorySeedResult:
+    """AI/ML-2 interface: Bridges onboarding intelligence into structured memory."""
+    print(f"\n>>> [API /api/v1/memory] Seeding memory from onboarding report for '{report.learner_id}'")
+    engine = get_memory_engine()
+    try:
+        result = engine.initialize_memory_from_onboarding(report)
+        print(f">>> [API /api/v1/memory] Seeding complete: {result.summary}")
+        return result
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(val_err),
+        )
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error seeding memory from onboarding report: {str(err)}",
+        )
+
+
+@router.get(
+    "/{learner_id}/relevant",
+    response_model=RelevantMemoryContext,
+    status_code=status.HTTP_200_OK,
+    summary="Inspect Scoped Relevant Memory Context",
+    description=(
+        "Inspects scoped learner memory (relevant preferences, friction, history, projects, and active goals) "
+        "tailored for a topic and objective, matching the context used in lesson planning."
+    ),
+    responses={
+        200: {"description": "Scoped relevant memory context returned."},
+        422: {"description": "Validation error: Missing or invalid learner_id."},
+    },
+)
+def get_relevant_memory_context(
+    learner_id: str,
+    topic: Optional[str] = Query(default=None, description="Topic of the upcoming learning activity"),
+    objective: Optional[str] = Query(default=None, description="Learning objective"),
+    target_role: Optional[str] = Query(default=None, description="Optional target career role"),
+) -> RelevantMemoryContext:
+    """AI/ML-2 interface: Read-only inspection of scoped relevant memory context."""
+    clean_id = learner_id.strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="learner_id cannot be empty or whitespace.",
+        )
+    engine = get_memory_engine()
+    query = RelevantMemoryQuery(
+        learner_id=clean_id,
+        topic=topic,
+        objective=objective,
+        target_role=target_role,
+    )
+    try:
+        return engine.retrieve_relevant_context(query)
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error retrieving relevant memory context: {str(err)}",
+        )
+
+
+@router.get(
+    "/{learner_id}",
+    response_model=LearnerMemory,
+    status_code=status.HTTP_200_OK,
+    summary="Inspect Complete Learner Memory Container",
+    description=(
+        "Read-only inspection of the learner's complete 7-dimension memory container "
+        "for debugging and verification by Backend and AI/ML-1 orchestration."
+    ),
+    responses={
+        200: {"description": "Complete learner memory container returned."},
+        404: {"description": "Learner memory not found."},
+        422: {"description": "Validation error: Missing or invalid learner_id."},
+    },
+)
+def get_learner_memory(learner_id: str) -> LearnerMemory:
+    """AI/ML-2 interface: Read-only retrieval of the complete learner memory container."""
+    clean_id = learner_id.strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="learner_id cannot be empty or whitespace.",
+        )
+    engine = get_memory_engine()
+    memory = engine.get_memory(clean_id)
+    if memory is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Learner memory not found for '{clean_id}'.",
+        )
+    return memory

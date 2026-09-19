@@ -81,3 +81,26 @@ class MemoryUpdateResult(BaseModel):
     summary: str = Field(..., description="Human-readable description of the update outcome")
     friction_level_updated: bool = False
     new_mastery_level: Optional[float] = None
+
+
+class MemorySeedResult(BaseModel):
+    """Result report returned after seeding learner memory from onboarding intelligence."""
+
+    success: bool = True
+    learner_id: str = Field(..., min_length=1, description="Target learner identifier")
+    seeded_facets: List[str] = Field(
+        default_factory=list,
+        description="Memory facets initialized or updated (e.g. ['goals', 'preferences', 'metadata'])",
+    )
+    updated_facets: List[str] = Field(
+        default_factory=list,
+        description="Alias for seeded_facets for consistency with MemoryUpdateResult",
+    )
+    is_new_initialization: bool = Field(
+        ...,
+        description="True if memory container was freshly initialized; False if learner was already seeded",
+    )
+    summary: str = Field(
+        default="Learner memory successfully seeded from onboarding intelligence report.",
+        description="Human-readable outcome description",
+    )

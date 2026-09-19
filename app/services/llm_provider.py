@@ -298,10 +298,35 @@ class MockLLMProvider(BaseLLMProvider):
     """
 
     def generate_pedagogy_decision(self, prompt: str) -> PedagogyDecision:
+        # Detect active struggle or friction points in prompt
+        is_remediation = (
+            "Active struggle on" in prompt
+            or "Severity: high" in prompt
+            or "Severity: moderate" in prompt
+        )
+
+        mode = PresentationMode.VISUAL
+        prompt_lower = prompt.lower()
+        if "recommended mode by memory: interactive" in prompt_lower or "preferred modality: interactive" in prompt_lower:
+            mode = PresentationMode.INTERACTIVE
+        elif "recommended mode by memory: story" in prompt_lower or "preferred modality: story" in prompt_lower:
+            mode = PresentationMode.STORY
+        elif "recommended mode by memory: simulation" in prompt_lower or "preferred modality: simulation" in prompt_lower:
+            mode = PresentationMode.SIMULATION
+
+        if is_remediation:
+            return PedagogyDecision(
+                strategy=TeachingStrategy.REMEDIATION,
+                difficulty=DifficultyLevel.BEGINNER,
+                presentation_mode=mode,
+                explanation_depth="step-by-step",
+                rationale="Active friction detected in learner memory context. Prioritizing targeted remediation with worked examples and scaffolding.",
+            )
+
         return PedagogyDecision(
             strategy=TeachingStrategy.FOUNDATIONAL,
             difficulty=DifficultyLevel.BEGINNER,
-            presentation_mode=PresentationMode.VISUAL,
+            presentation_mode=mode,
             explanation_depth="step-by-step",
             rationale="Deterministic mock: Learner requires foundational scaffolding with visual demonstrations.",
         )

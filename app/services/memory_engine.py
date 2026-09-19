@@ -15,9 +15,11 @@ from app.schemas.memory import (
 from app.schemas.memory_events import (
     MemoryUpdateEvent,
     MemoryUpdateResult,
+    MemorySeedResult,
     MemoryEventType,
     EvidenceSource,
 )
+from app.schemas.intelligence import LearnerIntelligenceReport
 from app.schemas.memory_context import (
     RelevantMemoryQuery,
     RelevantMemoryContext,
@@ -62,6 +64,164 @@ class MemoryEngine:
             memory = LearnerMemory(learner_id=clean_id)
             self.repository.save_memory(memory)
         return memory
+
+    def get_memory(self, learner_id: str) -> Optional[LearnerMemory]:
+        """Retrieve existing learner memory container without mutating the repository."""
+        clean_id = learner_id.strip()
+        return self.repository.get_memory(clean_id)
+
+    def initialize_memory_from_onboarding(
+        self, report: LearnerIntelligenceReport
+    ) -> MemorySeedResult:
+        """Bridges Sprint-2 Onboarding intelligence into the Sprint-3 LearnerMemory container.
+
+        Maps career goals, cognitive preferences, pacing, format priorities, and baseline skills
+        into structured memory idempotently without replacing existing historical evidence or events.
+        """
+        if not report or not getattr(report, "learner_id", None) or not str(report.learner_id).strip():
+            raise ValueError("Invalid onboarding report: learner_id cannot be empty or whitespace.")
+
+        learner_id = str(report.learner_id).strip()
+        existing = self.repository.get_memory(learner_id)
+        if existing is None:
+            memory = LearnerMemory(learner_id=learner_id)
+            is_new = True
+        else:
+            memory = existing
+            is_new = not bool(memory.metadata.get("onboarding_seeded", False))
+
+        seeded_facets: List[str] = []
+        now = _utc_now()
+
+        # 1. Map Career Goals
+        target_role = (
+            getattr(report, "target_role", None)
+            or getattr(report.career_goals, "target_role", None)
+            or ""
+        ).strip()
+        if target_role:
+            memory.goals.primary_target_role = target_role
+        if getattr(report.career_goals, "estimated_timeline_months", None) is not None:
+            memory.goals.target_timeline_months = report.career_goals.estimated_timeline_months
+
+        for m in getattr(report.career_goals, "key_milestones", []):
+            cleaned_m = str(m).strip()
+            if cleaned_m and cleaned_m not in memory.goals.milestones:
+                memory.goals.milestones.append(cleaned_m)
+
+        for hook in getattr(report.motivation, "engagement_hooks", []):
+            cleaned_h = str(hook).strip()
+            if cleaned_h and cleaned_h not in memory.goals.secondary_interests:
+                memory.goals.secondary_interests.append(cleaned_h)
+
+        memory.goals.last_updated = now
+        seeded_facets.append("goals")
+
+        # 2. Map Learning Preferences
+        pref = memory.preferences
+        if getattr(report.learning_style, "dominant_modality", None):
+            pref.dominant_modality = str(report.learning_style.dominant_modality).strip().lower()
+        if getattr(report.learning_style, "secondary_modality", None):
+            pref.secondary_modality = str(report.learning_style.secondary_modality).strip().lower()
+        if getattr(report.learning_style, "recommended_pacing", None):
+            pref.pacing = str(report.learning_style.recommended_pacing).strip().lower()
+        if getattr(report.learning_style, "feedback_cadence", None):
+            pref.feedback_frequency = str(report.learning_style.feedback_cadence).strip()
+
+        for fmt in getattr(report.learning_style, "content_format_priorities", []):
+            cleaned_fmt = str(fmt).strip()
+            if cleaned_fmt and cleaned_fmt not in pref.content_format_priorities:
+                pref.content_format_priorities.append(cleaned_fmt)
+
+        balance = (getattr(report.knowledge_analysis, "theoretical_vs_applied_balance", "") or "").lower()
+        if "applied" in balance or "practical" in balance:
+            pref.practical_vs_theory_ratio = 0.8
+        elif "theor" in balance:
+            pref.practical_vs_theory_ratio = 0.4
+        elif "balance" in balance:
+            pref.practical_vs_theory_ratio = 0.7
+
+        pref.last_updated = now
+        seeded_facets.append("preferences")
+
+        # 3. Map Metadata & Baseline Skills
+        stage_val = report.stage.value if hasattr(report.stage, "value") else str(report.stage)
+        memory.metadata["onboarding_seeded"] = True
+        memory.metadata["academic_stage"] = stage_val
+
+        existing_skills = memory.metadata.get("baseline_skills", [])
+        new_skills = [
+            s for s in getattr(report.skill_analysis, "core_strengths", [])
+            if s not in existing_skills
+        ]
+        memory.metadata["baseline_skills"] = existing_skills + new_skills
+
+        existing_gaps = memory.metadata.get("critical_skill_gaps", [])
+        new_gaps = [
+            g for g in getattr(report.skill_analysis, "critical_skill_gaps", [])
+            if g not in existing_gaps
+        ]
+        memory.metadata["critical_skill_gaps"] = existing_gaps + new_gaps
+
+        readiness_tier_val = (
+            report.readiness.readiness_tier.value
+            if hasattr(report.readiness.readiness_tier, "value")
+            else str(report.readiness.readiness_tier)
+        )
+        memory.metadata["readiness_tier"] = readiness_tier_val
+        memory.metadata["overall_readiness_score"] = report.readiness.overall_readiness_score
+        if report.executive_summary:
+            memory.metadata["executive_summary"] = report.executive_summary
+        seeded_facets.append("metadata")
+
+        # 4. Optional Onboarding Milestone Achievement
+        if readiness_tier_val == "high":
+            ach_title = "Onboarding Excellence"
+            if not any(a.title == ach_title for a in memory.achievements):
+                memory.achievements.append(
+                    AchievementMemory(
+                        title=ach_title,
+                        category="milestone",
+                        description=(
+                            f"Demonstrated high onboarding readiness "
+                            f"({report.readiness.overall_readiness_score * 100:.0f}%) and strong foundational alignment."
+                        ),
+                        unlocked_at=now,
+                    )
+                )
+                seeded_facets.append("achievements")
+
+        # 5. Persist to repository
+        memory.updated_at = now
+        self.repository.save_memory(memory)
+
+        # 6. Record append-only raw evidence event for auditability
+        seed_event = MemoryUpdateEvent(
+            learner_id=learner_id,
+            event_type=MemoryEventType.GOAL_CREATED,
+            evidence_source=EvidenceSource.EXPLICIT,
+            confidence_score=report.readiness.overall_readiness_score,
+            payload={
+                "source": "onboarding_intelligence_report",
+                "target_role": target_role,
+                "dominant_modality": pref.dominant_modality,
+                "readiness_tier": readiness_tier_val,
+                "is_new_initialization": is_new,
+            },
+            timestamp=now,
+        )
+        self.repository.record_event(seed_event)
+
+        unique_facets = list(dict.fromkeys(seeded_facets))
+        status_msg = "Freshly initialized" if is_new else "Idempotently updated"
+        return MemorySeedResult(
+            success=True,
+            learner_id=learner_id,
+            seeded_facets=unique_facets,
+            updated_facets=unique_facets,
+            is_new_initialization=is_new,
+            summary=f"{status_msg} memory container for learner '{learner_id}' from onboarding report.",
+        )
 
     def record_event(self, event: MemoryUpdateEvent) -> MemoryUpdateResult:
         """Evidence-driven memory update pipeline.
