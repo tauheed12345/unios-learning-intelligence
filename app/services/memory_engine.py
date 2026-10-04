@@ -765,3 +765,20 @@ class MemoryEngine:
             next_recommended_skills=["Next Curriculum Unit", "Applied Challenge"],
             rationale="Learner is progressing smoothly along planned curriculum milestones.",
         )
+
+
+_default_memory_repository = InMemoryMemoryRepository()
+_default_memory_engine = MemoryEngine(repository=_default_memory_repository)
+
+
+def get_memory_repository() -> BaseMemoryRepository:
+    """Provides the active memory repository instance."""
+    return _default_memory_repository
+
+
+def get_memory_engine(repository: Optional[BaseMemoryRepository] = None) -> MemoryEngine:
+    """Provides the active MemoryEngine instance."""
+    if repository:
+        return MemoryEngine(repository=repository)
+    return _default_memory_engine
+

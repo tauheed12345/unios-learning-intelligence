@@ -60,10 +60,13 @@ RELEVANT LEARNER MEMORY INTELLIGENCE:
   {history_summary}
 """
 
+    domain_info = context.academic_domain or (learner.academic_domain if learner else None) or (learner.academic_program if learner else "Standard")
+
     return f"""You are the UniOS Pedagogy Engine. Determine how to teach the following topic to the student.
 
 LEARNER CONTEXT:
 {stage_guide}
+- Academic Domain / Program: {domain_info}
 - Current Confidence: {learner.confidence.value}
 - Weak Topics: {', '.join(learner.weak_topics) if learner.weak_topics else 'None reported'}
 - Known Concept Mastery: {learner.concept_mastery}
@@ -77,7 +80,7 @@ INSTRUCTIONS:
 1. Select the appropriate TeachingStrategy (foundational, reinforcement, advancement, remediation).
    - If Active Friction Points are present on this or related topics, prioritize REMEDIATION with foundational scaffolding.
 2. Select DifficultyLevel (beginner, intermediate, advanced) based on mastery.
-3. Select PresentationMode (traditional, visual, story, simulation, animation, interactive) calibrated to learner modality.
+3. Select PresentationMode (traditional, visual, story, simulation, animation, interactive, analytical, case_study) calibrated to learner modality and domain.
 4. Provide a clear pedagogical rationale for your choices.
 5. Return strictly structured output adhering to the PedagogyDecision schema.
 """
@@ -89,6 +92,7 @@ def build_lesson_prompt(
     """Constructs the prompt for generating structured lesson blocks."""
     learner = context.learner_state
     stage_guide = get_stage_guidelines(learner.stage)
+    domain_info = context.academic_domain or (learner.academic_domain if learner else None) or (learner.academic_program if learner else "Standard")
 
     # Honor memory preference if available, else learner state preference
     preferred_mode = learner.learning_preference
@@ -99,10 +103,15 @@ def build_lesson_prompt(
         if pref.content_format_priorities:
             format_priorities_line = f"- Content Format Priorities: {', '.join(pref.content_format_priorities)}\n"
 
+    grounded_refs = ""
+    if context.curriculum_references:
+        grounded_refs = f"\nGROUNDED CURRICULUM CONTEXT:\n" + "\n".join(f"- {ref}" for ref in context.curriculum_references)
+
     return f"""You are the UniOS Lesson Generation Engine. Generate structured lesson blocks for the student.
 
 LEARNER CONTEXT:
 {stage_guide}
+- Academic Domain / Program: {domain_info}
 - Preferred Mode: {preferred_mode}
 {format_priorities_line}
 SELECTED PEDAGOGICAL STRATEGY:
@@ -110,15 +119,18 @@ SELECTED PEDAGOGICAL STRATEGY:
 - Difficulty: {pedagogy.difficulty.value}
 - Presentation Mode: {pedagogy.presentation_mode.value}
 - Explanation Depth: {pedagogy.explanation_depth}
-
+- Pedagogical Sequence: {', '.join(pedagogy.sequence)}
+- Practice Level: {pedagogy.practice_level.value}
+{grounded_refs}
 TOPIC & OBJECTIVE:
 - Topic: {context.topic}
 - Objective: {context.objective}
 - Grounded References: {context.curriculum_references if context.curriculum_references else 'Standard curriculum'}
 
 STRICT GENERATION RULES:
-1. Generate an ordered sequence of structured LessonBlocks (objective, explanation, worked_example, visual_spec, practice_task).
+1. Generate an ordered sequence of structured LessonBlocks (objective, explanation, worked_example, visual_spec, practice_task, or domain-adaptive blocks).
 2. Under no circumstances should you generate raw HTML, React, JSX, or frontend UI code.
 3. For visual_spec blocks, provide structured layout/renderer metadata (e.g. renderer type, step instructions).
-4. Ensure the content strictly matches the {pedagogy.difficulty.value} level.
+4. Ensure the content strictly matches the {pedagogy.difficulty.value} level and domain context.
 """
+

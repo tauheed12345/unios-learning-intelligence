@@ -10,10 +10,12 @@ from app.schemas import (
     TeachingStrategy,
     DifficultyLevel,
     PresentationMode,
+    PracticeLevel,
     GeneratedLesson,
     LessonBlock,
     LessonBlockType,
     LearnerStage,
+
     OnboardingInputProfile,
     LearnerIntelligenceReport,
     SkillAnalysis,
@@ -303,16 +305,27 @@ class MockLLMProvider(BaseLLMProvider):
             "Active struggle on" in prompt
             or "Severity: high" in prompt
             or "Severity: moderate" in prompt
+            or "prioritize REMEDIATION" in prompt and ("struggle" in prompt.lower() or "friction" in prompt.lower())
+        )
+        prompt_lower = prompt.lower()
+
+        # Check for advancement
+        is_advancement = (
+            "advancement" in prompt_lower
+            or "confidence: high" in prompt_lower and ("0.8" in prompt or "0.9" in prompt)
         )
 
         mode = PresentationMode.VISUAL
-        prompt_lower = prompt.lower()
-        if "recommended mode by memory: interactive" in prompt_lower or "preferred modality: interactive" in prompt_lower:
+        if "recommended mode by memory: interactive" in prompt_lower or "preferred modality: interactive" in prompt_lower or "interactive" in prompt_lower:
             mode = PresentationMode.INTERACTIVE
         elif "recommended mode by memory: story" in prompt_lower or "preferred modality: story" in prompt_lower:
             mode = PresentationMode.STORY
-        elif "recommended mode by memory: simulation" in prompt_lower or "preferred modality: simulation" in prompt_lower:
+        elif "recommended mode by memory: simulation" in prompt_lower or "preferred modality: simulation" in prompt_lower or "simulation" in prompt_lower:
             mode = PresentationMode.SIMULATION
+        elif any(term in prompt_lower for term in ["commerce", "b.com", "mba", "finance", "accounting"]):
+            mode = PresentationMode.CASE_STUDY
+        elif any(term in prompt_lower for term in ["law", "legal", "humanities", "arts", "psychology"]):
+            mode = PresentationMode.ANALYTICAL
 
         if is_remediation:
             return PedagogyDecision(
@@ -321,6 +334,34 @@ class MockLLMProvider(BaseLLMProvider):
                 presentation_mode=mode,
                 explanation_depth="step-by-step",
                 rationale="Active friction detected in learner memory context. Prioritizing targeted remediation with worked examples and scaffolding.",
+                sequence=[
+                    "prerequisite_review",
+                    "simplified_concept_breakdown",
+                    "scaffolded_worked_example",
+                    "guided_remedial_practice",
+                    "formative_reassessment",
+                ],
+                practice_level=PracticeLevel.REMEDIAL,
+                remediation=True,
+                recommended_level="beginner",
+            )
+        elif is_advancement:
+            return PedagogyDecision(
+                strategy=TeachingStrategy.ADVANCEMENT,
+                difficulty=DifficultyLevel.ADVANCED,
+                presentation_mode=mode,
+                explanation_depth="deep-dive",
+                rationale="Advancement strategy: High verified mastery and confidence. Prioritizing architectural trade-offs and complex application.",
+                sequence=[
+                    "concept_synthesis",
+                    "advanced_domain_tradeoffs",
+                    "complex_edge_cases",
+                    "challenge_based_practice",
+                    "summative_assessment",
+                ],
+                practice_level=PracticeLevel.CHALLENGE_BASED,
+                remediation=False,
+                recommended_level="advanced",
             )
 
         return PedagogyDecision(
@@ -329,6 +370,16 @@ class MockLLMProvider(BaseLLMProvider):
             presentation_mode=mode,
             explanation_depth="step-by-step",
             rationale="Deterministic mock: Learner requires foundational scaffolding with visual demonstrations.",
+            sequence=[
+                "prerequisite_check",
+                "core_concept_introduction",
+                "worked_example",
+                "guided_practice",
+                "formative_assessment",
+            ],
+            practice_level=PracticeLevel.GUIDED,
+            remediation=False,
+            recommended_level="beginner",
         )
 
     def generate_lesson(
@@ -341,10 +392,68 @@ class MockLLMProvider(BaseLLMProvider):
         if pedagogy_decision is None:
             pedagogy_decision = self.generate_pedagogy_decision(prompt)
 
+        # Context-aware content tailoring
+        prompt_lower = prompt.lower()
+        if "commerce" in prompt_lower or "b.com" in prompt_lower or "finance" in prompt_lower:
+            example_title = "Financial Analysis Case"
+            example_content = f"Case analysis applying {topic} to evaluate fiscal balance, ledger adjustments, and cash flow."
+            practice_title = "Applied Financial Assessment"
+            practice_content = f"Calculate the adjusted ratios for {topic} given the provided business scenario."
+        elif "law" in prompt_lower or "legal" in prompt_lower:
+            example_title = "Case Law Analysis"
+            example_content = f"Statutory interpretation and case brief illustrating the doctrine of {topic}."
+            practice_title = "Statutory Analysis Task"
+            practice_content = f"Draft an analytical argument reconciling conflicting precedents under {topic}."
+        elif "mba" in prompt_lower or "management" in prompt_lower:
+            example_title = "Executive Business Case"
+            example_content = f"Strategic evaluation of {topic} demonstrating ROI trade-offs and organizational risk."
+            practice_title = "Strategic Decision Scenario"
+            practice_content = f"Develop an executive recommendation resolving the operational friction in {topic}."
+        elif "science" in prompt_lower or "biotech" in prompt_lower or "physics" in prompt_lower:
+            example_title = "Experimental Methodology"
+            example_content = f"Scientific protocol and hypothesis testing demonstrating empirical validation of {topic}."
+            practice_title = "Laboratory Data Analysis"
+            practice_content = f"Formulate a testable hypothesis and analyze simulation outcomes for {topic}."
+        elif pedagogy_decision.remediation:
+            example_title = "Scaffolded Walkthrough"
+            example_content = f"Step-by-step remediation breaking down {topic} with simplified prerequisites."
+            practice_title = "Guided Practice Check"
+            practice_content = f"Targeted check for understanding on {topic} with immediate hints."
+        else:
+            example_title = "Walkthrough Example"
+            example_content = f"A concrete, beginner-friendly walkthrough demonstrating {topic} in practice."
+            practice_title = "Check for Understanding"
+            practice_content = f"Apply your understanding of {topic} to solve a simple challenge."
+
+        from app.schemas.lesson import AssessmentIntent, NextLearningAction
+
+        assessment_intent = AssessmentIntent(
+            target_concepts=[topic],
+            assessment_mode="diagnostic" if pedagogy_decision.remediation else "formative",
+            difficulty=pedagogy_decision.difficulty.value,
+            question_count=3,
+            evaluation_criteria=[f"Demonstrate accurate comprehension of {topic}"],
+        )
+
+        next_action = NextLearningAction(
+            action_type="reassessment" if pedagogy_decision.remediation else "practice",
+            target_topic=topic,
+            rationale=(
+                f"Complete formative reassessment for '{topic}' to verify remediation success."
+                if pedagogy_decision.remediation
+                else f"Proceed with guided practice on '{topic}' to build proficiency."
+            ),
+            urgency="immediate" if pedagogy_decision.remediation else "normal",
+        )
+
         return GeneratedLesson(
             context_id=context_id,
+            request_id=context_id,
             topic=topic,
             pedagogy_decision=pedagogy_decision,
+            prerequisites=[f"Prerequisite foundations of {topic}"],
+            assessment_intent=assessment_intent,
+            next_action=next_action,
             blocks=[
                 LessonBlock(
                     type=LessonBlockType.OBJECTIVE,
@@ -358,8 +467,8 @@ class MockLLMProvider(BaseLLMProvider):
                 ),
                 LessonBlock(
                     type=LessonBlockType.WORKED_EXAMPLE,
-                    title="Walkthrough Example",
-                    content=f"A concrete, beginner-friendly walkthrough demonstrating {topic} in practice.",
+                    title=example_title,
+                    content=example_content,
                 ),
                 LessonBlock(
                     type=LessonBlockType.VISUAL_SPEC,
@@ -369,8 +478,8 @@ class MockLLMProvider(BaseLLMProvider):
                 ),
                 LessonBlock(
                     type=LessonBlockType.PRACTICE_TASK,
-                    title="Check for Understanding",
-                    content=f"Apply your understanding of {topic} to solve a simple challenge.",
+                    title=practice_title,
+                    content=practice_content,
                     metadata={
                         "task_type": "mcq",
                         "options": ["A", "B", "C"],
@@ -379,6 +488,7 @@ class MockLLMProvider(BaseLLMProvider):
                 ),
             ],
         )
+
 
     def analyze_learner_onboarding(
         self, profile: OnboardingInputProfile, prompt: str
@@ -673,7 +783,8 @@ class GroqLLMProvider(BaseLLMProvider):
 
         system_instruction = (
             "You are a structured lesson generation engine for UniOS. "
-            "Generate an ordered list of 3-5 structured learning blocks.\n"
+            "Generate EXACTLY 5 structured learning blocks in this EXACT ORDER: "
+            "1) objective, 2) explanation, 3) worked_example, 4) visual_spec, 5) practice_task.\n"
             "CRITICAL BOUNDARY: Under NO circumstances should you output raw HTML, JSX, or React UI code.\n"
             "Output strictly valid JSON matching this schema:\n"
             "{\n"
@@ -692,7 +803,7 @@ class GroqLLMProvider(BaseLLMProvider):
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=850,
+            max_tokens=1200,
             temperature=settings.LLM_TEMPERATURE,
         )
         json_text = extract_json_payload(raw_content)
@@ -721,11 +832,38 @@ class GroqLLMProvider(BaseLLMProvider):
             if not normalized_blocks:
                 raise ValueError("Parsed zero valid lesson blocks from response.")
 
+            # Deterministically populate Sprint-4 contract fields (A2-S4-02):
+            # prerequisites, assessment_intent, and next_action are always required
+            # and are derived from topic + pedagogy_decision, not from the LLM blocks.
+            from app.schemas.lesson import AssessmentIntent, NextLearningAction
+
+            assessment_intent = AssessmentIntent(
+                target_concepts=[topic],
+                assessment_mode="diagnostic" if pedagogy_decision.remediation else "formative",
+                difficulty=pedagogy_decision.difficulty.value,
+                question_count=3,
+                evaluation_criteria=[f"Demonstrate accurate comprehension of {topic}"],
+            )
+
+            next_action = NextLearningAction(
+                action_type="reassessment" if pedagogy_decision.remediation else "practice",
+                target_topic=topic,
+                rationale=(
+                    f"Complete formative reassessment for '{topic}' to verify remediation success."
+                    if pedagogy_decision.remediation
+                    else f"Proceed with guided practice on '{topic}' to build proficiency."
+                ),
+                urgency="immediate" if pedagogy_decision.remediation else "normal",
+            )
+
             return GeneratedLesson(
                 context_id=context_id,
                 topic=topic,
                 pedagogy_decision=pedagogy_decision,
                 blocks=normalized_blocks,
+                prerequisites=[f"Prerequisite foundations of {topic}"],
+                assessment_intent=assessment_intent,
+                next_action=next_action,
             )
         except Exception as e:
             raise LLMParseError(f"Failed to parse lesson blocks from LLM: {str(e)}", raw_content=raw_content)

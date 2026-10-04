@@ -21,22 +21,18 @@ from app.services.memory_repository import (
     BaseMemoryRepository,
     InMemoryMemoryRepository,
 )
-from app.services.memory_engine import MemoryEngine
+from app.services.memory_engine import (
+    MemoryEngine,
+    get_memory_engine,
+    get_memory_repository,
+)
+from app.services.pedagogy_engine import PedagogyEngine, get_pedagogy_engine
+from app.services.mastery_engine import MasteryEngine, get_mastery_engine
+from app.services.remediation_service import (
+    RemediationLoopService,
+    get_remediation_service,
+)
 
-_global_memory_repository = InMemoryMemoryRepository()
-_global_memory_engine = MemoryEngine(repository=_global_memory_repository)
-
-
-def get_memory_repository() -> BaseMemoryRepository:
-    """Provides the active memory repository instance."""
-    return _global_memory_repository
-
-
-def get_memory_engine(repository: BaseMemoryRepository = None) -> MemoryEngine:
-    """Provides the active MemoryEngine instance."""
-    if repository:
-        return MemoryEngine(repository=repository)
-    return _global_memory_engine
 
 
 __all__ = [
@@ -57,4 +53,11 @@ __all__ = [
     "MemoryEngine",
     "get_memory_repository",
     "get_memory_engine",
+    "PedagogyEngine",
+    "get_pedagogy_engine",
+    "MasteryEngine",
+    "get_mastery_engine",
+    "RemediationLoopService",
+    "get_remediation_service",
 ]
+

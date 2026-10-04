@@ -104,6 +104,18 @@ class LearnerState(BaseModel):
     strong_topics: List[str] = Field(default_factory=list)
     career_goal: Optional[str] = None
     learning_preference: Optional[str] = "visual"
+    academic_domain: Optional[str] = Field(
+        default=None,
+        description="Canonical academic domain (e.g. engineering, commerce, humanities, science, management, law)",
+    )
+    degree: Optional[str] = Field(
+        default=None,
+        description="Formal degree title (e.g. B.Tech, B.Com, BA, MSc, MBA)",
+    )
+    specialization: Optional[str] = Field(
+        default=None,
+        description="Disciplinary specialization or major concentration",
+    )
 
     @field_validator("learner_id")
     @classmethod

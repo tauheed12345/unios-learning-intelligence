@@ -9,9 +9,25 @@ from app.schemas.pedagogy import (
     TeachingStrategy,
     DifficultyLevel,
     PresentationMode,
+    PracticeLevel,
     PedagogyDecision,
 )
-from app.schemas.lesson import LessonBlockType, LessonBlock, GeneratedLesson
+from app.schemas.lesson import (
+    LessonBlockType,
+    LessonBlock,
+    AssessmentIntent,
+    NextLearningAction,
+    GeneratedLesson,
+)
+from app.schemas.mastery import (
+    MasteryTier,
+    AssessmentAttemptType,
+    AssessmentEvidence,
+    RemediationSignal,
+    MasteryUpdateResult,
+    ClosedLoopStep,
+    ClosedLoopResult,
+)
 from app.schemas.onboarding import (
     SkillCategory,
     DeclaredSkill,
@@ -66,10 +82,20 @@ __all__ = [
     "TeachingStrategy",
     "DifficultyLevel",
     "PresentationMode",
+    "PracticeLevel",
     "PedagogyDecision",
     "LessonBlockType",
     "LessonBlock",
+    "AssessmentIntent",
+    "NextLearningAction",
     "GeneratedLesson",
+    "MasteryTier",
+    "AssessmentAttemptType",
+    "AssessmentEvidence",
+    "RemediationSignal",
+    "MasteryUpdateResult",
+    "ClosedLoopStep",
+    "ClosedLoopResult",
     "SkillCategory",
     "DeclaredSkill",
     "LearningPreferencesInput",
